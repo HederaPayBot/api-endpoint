@@ -6,7 +6,7 @@ This document provides examples and explanations for using the Hedera Twitter Pa
 
 ### Register a New User
 
-Register a user with their Twitter username and Hedera account credentials.
+Register a user with their Twitter username and optional Hedera account credentials.
 
 ```
 POST /api/users/register
@@ -27,23 +27,29 @@ POST /api/users/register
 ```
 
 > Notes: 
-> - `twitterId` is optional. If not provided, a placeholder ID will be generated.
-> - `hederaNetworkType` defaults to "testnet" if not provided.
-> - `hederaKeyType` defaults to "ED25519" if not provided.
-> - Private keys are encrypted before storage.
+> - `twitterId` is optional and will be fetched from Twitter if not provided
+> - `hederaAccountId` is optional - if not provided, a new account will be created
+> - `hederaNetworkType` defaults to "testnet"
+> - `hederaKeyType` defaults to "ED25519"
+> - Private keys are encrypted before storage
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "message": "Successfully registered @yourTwitterUsername with Hedera account 0.0.12345"
+  "message": "Successfully registered @yourTwitterUsername",
+  "data": {
+    "twitterUsername": "yourTwitterUsername",
+    "hederaAccountId": "0.0.12345",
+    "registeredAt": "2024-03-15T12:30:45.000Z"
+  }
 }
 ```
 
 ### Get User Profile
 
-Retrieve a user's profile information including their Hedera accounts.
+Retrieve a user's profile information including their Hedera account details.
 
 ```
 GET /api/users/profile/:username
@@ -57,44 +63,15 @@ GET /api/users/profile/:username
   "user": {
     "twitterUsername": "yourTwitterUsername",
     "twitterId": "1234567890",
-    "registeredAt": "2023-04-15T12:30:45.000Z",
+    "registeredAt": "2024-03-15T12:30:45.000Z",
     "hederaAccounts": [
       {
         "accountId": "0.0.12345",
         "isPrimary": true,
-        "linkedAt": "2023-04-15T12:30:45.000Z"
+        "linkedAt": "2024-03-15T12:30:45.000Z"
       }
     ]
   }
-}
-```
-
-### Update User Profile
-
-Update a user's profile, including adding a new Hedera account.
-
-```
-PUT /api/users/profile
-```
-
-**Request Body:**
-
-```json
-{
-  "twitterUsername": "yourTwitterUsername",
-  "hederaAccountId": "0.0.54321",
-  "hederaPrivateKey": "302e020100300506032b6570042204203b3aae5ca9ebd98f33a494ca9aad2f53e90b7ffe31a9550f474c6f38e24af0bd",
-  "hederaPublicKey": "0x3b3aae5ca9ebd98f33a494ca9aad2f53e90b7ffe31a9550f474c6f38e24af0bd",
-  "makeDefault": true
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "message": "Hedera account 0.0.54321 linked to @yourTwitterUsername as primary account"
 }
 ```
 
@@ -125,11 +102,115 @@ GET /api/users/link-status/:username
 }
 ```
 
+## Twitter Integration
+
+### Poll for Mentions
+
+Manually trigger the polling service to check for new mentions.
+
+```
+GET /api/twitter/poll-mentions
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "message": "Successfully processed mentions",
+  "processed": 5
+}
+```
+
+### Get Recent Mentions
+
+Get recent mentions of the bot account (for development/testing).
+
+```
+GET /api/twitter/mentions
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "mentions": [
+    {
+      "id": "1234567890",
+      "text": "@HederaPayBot show my balance",
+      "author": {
+        "username": "someUser",
+        "id": "987654321"
+      },
+      "created_at": "2024-03-15T12:30:45.000Z"
+    }
+  ]
+}
+```
+
+### Send Test Reply
+
+Send a test reply to a tweet (for development/testing).
+
+```
+POST /api/twitter/reply
+```
+
+**Request Body:**
+
+```json
+{
+  "tweetId": "1234567890",
+  "text": "@someUser Your balance is 100 HBAR."
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "tweet": {
+    "id": "9876543210",
+    "text": "@someUser Your balance is 100 HBAR."
+  }
+}
+```
+
+### Test Command Processing
+
+Test command processing without actual Twitter interaction.
+
+```
+POST /api/twitter/test-command
+```
+
+**Request Body:**
+
+```json
+{
+  "command": "show my balance",
+  "userId": "1234567890",
+  "userName": "testUser"
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "response": "Your current balance is 100 HBAR.",
+  "transaction_id": "0.0.12345@1620000000.000000000"
+}
+```
+
 ## Eliza Integration
 
-### Forward Message to Eliza
+### Send Message to Eliza
 
-Send a message to the Eliza agent for processing. The API will automatically include the user's Hedera credentials if they are registered.
+Send a message to the Eliza agent for processing.
 
 ```
 POST /api/eliza/message
@@ -141,17 +222,16 @@ POST /api/eliza/message
 {
   "text": "What is my HBAR balance?",
   "userId": "1234567890",
-  "userName": "yourTwitterUsername"
+  "userName": "testUser"
 }
 ```
 
 **Response:**
 
-The response will vary based on Eliza's processing of the command. Example:
-
 ```json
 {
-  "text": "Your current balance is 100 HBAR.",
+  "success": true,
+  "response": "Your current balance is 100 HBAR.",
   "transaction_id": "0.0.12345@1620000000.000000000"
 }
 ```
@@ -179,83 +259,30 @@ GET /api/eliza/status
 }
 ```
 
-## Twitter Integration
-
-### Get Recent Mentions
-
-Get recent mentions of the bot's Twitter account (development only).
-
-```
-GET /api/twitter/mentions
-```
-
-**Response:**
-
-```json
-{
-  "mentions": [
-    {
-      "id": "1234567890",
-      "text": "@HederaPayBot show my balance",
-      "created_at": "2023-04-15T12:30:45.000Z"
-    }
-  ]
-}
-```
-
-### Send Test Reply
-
-Send a test reply to a tweet (development only).
-
-```
-POST /api/twitter/reply
-```
-
-**Request Body:**
-
-```json
-{
-  "tweet_id": "1234567890",
-  "text": "@someUser Your balance is 100 HBAR."
-}
-```
-
-**Response:**
-
-```json
-{
-  "result": {
-    "data": {
-      "id": "9876543210",
-      "text": "@someUser Your balance is 100 HBAR."
-    }
-  }
-}
-```
-
 ## Security Considerations
 
-This API handles sensitive cryptographic keys. Important security notes:
-
-1. In production, ensure all API endpoints are served over HTTPS
-2. Private keys are encrypted before storage using AES-256-CBC
-3. Set a strong `ENCRYPTION_KEY` in your environment variables
-4. Consider using a hardware security module (HSM) for production deployments
-5. User credentials are only transmitted to the Eliza service over a secure connection
+1. All endpoints require appropriate authentication
+2. Rate limiting is implemented on all endpoints
+3. Private keys are encrypted before storage
+4. Input validation is performed on all requests
+5. Sensitive data is never logged
 
 ## Error Handling
 
-All endpoints return appropriate status codes and error messages:
+All endpoints return appropriate HTTP status codes and error messages:
 
-- `400` for client errors (missing parameters, invalid format)
+- `400` for client errors (missing/invalid parameters)
+- `401` for authentication errors
 - `404` for not found errors
+- `429` for rate limit exceeded
 - `500` for server errors
 
-Error responses have this format:
+Error responses follow this format:
 
 ```json
 {
   "success": false,
-  "error": "Error message explaining what went wrong"
+  "error": "Detailed error message",
+  "code": "ERROR_CODE"
 }
 ``` 

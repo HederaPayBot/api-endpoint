@@ -78,24 +78,6 @@ const setupTwitterClient = async () => {
 // Call Twitter client initialization
 setupTwitterClient();
 
-// Setup test Twitter to Hedera mappings
-const setupTestData = () => {
-  try {
-    // Add test Twitter-to-Hedera account mappings if available
-    if (process.env.TEST_TWITTER_USER && process.env.TEST_HEDERA_ACCOUNT) {
-      console.log(`Setting up test data: Mapping @${process.env.TEST_TWITTER_USER} to ${process.env.TEST_HEDERA_ACCOUNT}`);
-      mapTwitterToHederaAccount(process.env.TEST_TWITTER_USER, process.env.TEST_HEDERA_ACCOUNT);
-    }
-    
-    if (process.env.TEST_TWITTER_USER_2 && process.env.TEST_HEDERA_ACCOUNT_2) {
-      console.log(`Setting up test data: Mapping @${process.env.TEST_TWITTER_USER_2} to ${process.env.TEST_HEDERA_ACCOUNT_2}`);
-      mapTwitterToHederaAccount(process.env.TEST_TWITTER_USER_2, process.env.TEST_HEDERA_ACCOUNT_2);
-    }
-  } catch (error) {
-    console.error('Error setting up test data:', error);
-  }
-};
-
 // Routes
 app.use('/api/twitter', twitterRoutes);
 
@@ -142,8 +124,6 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   
-  // Setup test data
-  setupTestData();
 });
 
 export { hederaClient }; 

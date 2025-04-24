@@ -7,14 +7,14 @@ import {
   generateBalanceResponse,
   hasBeenProcessed,
   markAsProcessed,
-  getUserInfo,
   filterRecentMentions,
-  ParsedCommand
+  ParsedCommand,
+  forceReprocessTweet
 } from '../services/twitterService';
 import { 
-  processSpecialCommand, 
   getHederaAccountFromTwitter
 } from '../services/elizaService';
+import { createAccountForTwitterUser } from '../services/hederaAccountService';
 import {
   handleSendCommand,
   handleBalanceCommand,
@@ -63,16 +63,18 @@ export const processMentions = async (req: Request, res: Response): Promise<Resp
       });
     }
     
-    // Filter to only include mentions from the last 24 hours
+    // Filter to only include mentions from the last 5 minutes
     const recentMentions = await filterRecentMentions(mentions);
     
     if (recentMentions.length === 0) {
       return res.status(200).json({ 
         status: 'success', 
-        message: 'No recent mentions found in the last 24 hours',
+        message: 'No recent mentions found in the last 5 minutes',
         processed: 0
       });
     }
+    
+    console.log(`Processing ${recentMentions.length} mentions from the last 5 minutes...`);
     
     let processed = 0;
     const errors: any[] = [];
@@ -94,6 +96,17 @@ export const processMentions = async (req: Request, res: Response): Promise<Resp
       try {
         // Access properties safely with defaults
         const id = mention.id_str || mention.id || mention.rest?.id_str || mention.rest?.id;
+        const createdAt = mention.created_at || mention.createdAt || new Date().toISOString();
+        const tweetDate = new Date(createdAt);
+        
+        // Double-check the tweet is within our 5-minute window
+        const fiveMinutesAgo = new Date();
+        fiveMinutesAgo.setMinutes(fiveMinutesAgo.getMinutes() - 5);
+        
+        if (tweetDate < fiveMinutesAgo) {
+          console.log(`Skipping tweet ${id} from ${tweetDate.toISOString()} - outside 5 minute window`);
+          continue;
+        }
         
         if (!id) {
           console.log('Skipping mention with no ID:', mention);
@@ -125,22 +138,36 @@ export const processMentions = async (req: Request, res: Response): Promise<Resp
           continue;
         }
         
-        // Check if this is a supported command type
+        // Parse the mention into a structured command
         const parsedCommand = parseTwitterMention(tweetEvent.text);
+        console.log(`Tweet ${id} parsed as command type: ${parsedCommand.command}`);
         
-        // Only process specific supported command types
-        const supportedCommands = [
+        // Process broader range of commands
+        const commonCommands = [
           'SEND', 'BALANCE', 'HBAR_BALANCE', 'CREATE_TOKEN', 'AIRDROP', 
           'REGISTER', 'TOKEN_HOLDERS', 'MINT_TOKEN', 'MINT_NFT', 
           'REJECT_TOKEN', 'ASSOCIATE_TOKEN', 'DISSOCIATE_TOKEN', 
           'TRANSFER_HBAR', 'TRANSFER_HTS', 'CLAIM_AIRDROP', 
           'PENDING_AIRDROPS', 'GET_TOPIC_INFO', 'SUBMIT_TOPIC_MESSAGE', 
-          'CREATE_TOPIC', 'GET_TOPIC_MESSAGES', 'DELETE_TOPIC'
+          'CREATE_TOPIC', 'GET_TOPIC_MESSAGES', 'DELETE_TOPIC',
+          'GREETING', 'UNKNOWN', 'REGISTER_INTENT'
         ];
-        if (!supportedCommands.includes(parsedCommand.command) && 
-            !isBalanceQuery(tweetEvent.text).isBalanceQuery) {
-          console.log(`Skipping tweet ${id} - Not a supported command: ${parsedCommand.command}`);
-          await markAsProcessed(id); // Mark as processed to avoid checking again
+        
+        // Check for force processing flag in request
+        const forceProcess = req.query.force === 'true';
+        
+        // Always process if:
+        // 1. It's a recognized command OR
+        // 2. It's a balance query OR
+        // 3. Force processing is enabled
+        if (!commonCommands.includes(parsedCommand.command) && 
+            !isBalanceQuery(tweetEvent.text).isBalanceQuery && 
+            !forceProcess) {
+          console.log(`Skipping tweet ${id} - Not a recognized command type and force=false`);
+          
+          // Important: Only mark as processed if skipping due to command type
+          // This way time-based expiration will still work for these tweets
+          await markAsProcessed(id, true); // Second parameter indicates skipped due to command type
           continue;  
         }
         
@@ -238,27 +265,75 @@ async function processTweetEvent(tweetEvent: TweetEvent): Promise<void> {
     
     // Handle registration command specially
     if (parsedCommand.command === 'REGISTER') {
-      const response = await processSpecialCommand(
-        parsedCommand.command,
-        parsedCommand,
-      tweetEvent.user.id_str, 
-      tweetEvent.user.screen_name
-    );
-    
-      if (response) {
-        // Send the response directly
+      // Instead of going through processSpecialCommand which expects an account ID,
+      // create a Hedera account directly for the user
+      try {
+        const result = await createAccountForTwitterUser(
+          tweetEvent.user.screen_name,
+          tweetEvent.user.id_str,
+          10 // Give them 10 HBAR initial balance
+        );
+
+        if (result.success) {
+          await replyToTweet(
+            tweetEvent.id_str,
+            `@${tweetEvent.user.screen_name} ${result.message}`
+          );
+        } else {
+          await replyToTweet(
+            tweetEvent.id_str,
+            `@${tweetEvent.user.screen_name} ${result.message}`
+          );
+        }
+        
+        console.log(`Created Hedera account for user "${tweetEvent.user.screen_name}" via REGISTER command`);
+        return;
+      } catch (error) {
+        console.error('Error creating Hedera account:', error);
         await replyToTweet(
           tweetEvent.id_str,
-          `@${tweetEvent.user.screen_name} ${response.text}`
+          `@${tweetEvent.user.screen_name} Sorry, I couldn't create a Hedera account for you right now. Please try again later.`
         );
+        return;
+      }
+    }
+    
+    // Handle registration intent (when user wants to register but doesn't provide an account ID)
+    if (parsedCommand.command === 'REGISTER_INTENT') {
+      // Create a Hedera account for the user automatically
+      try {
+        const result = await createAccountForTwitterUser(
+          tweetEvent.user.screen_name,
+          tweetEvent.user.id_str,
+          10 // Give them 10 HBAR initial balance
+        );
+
+        if (result.success) {
+          await replyToTweet(
+            tweetEvent.id_str,
+            `@${tweetEvent.user.screen_name} ${result.message}`
+          );
+        } else {
+          await replyToTweet(
+            tweetEvent.id_str,
+            `@${tweetEvent.user.screen_name} ${result.message}`
+          );
+        }
         
-        console.log(`Processed special command "${parsedCommand.command}" for tweet ${tweetEvent.id_str}`);
+        console.log(`Created Hedera account for user "${tweetEvent.user.screen_name}" via REGISTER_INTENT command`);
+        return;
+      } catch (error) {
+        console.error('Error creating Hedera account:', error);
+        await replyToTweet(
+          tweetEvent.id_str,
+          `@${tweetEvent.user.screen_name} Sorry, I couldn't create a Hedera account for you right now. Please try again later.`
+        );
         return;
       }
     }
     
     // For all other commands, check if user is registered first
-    if (!hederaAccount && !['REGISTER', 'GREETING'].includes(parsedCommand.command)) {
+    if (!hederaAccount && !['REGISTER', 'REGISTER_INTENT', 'GREETING'].includes(parsedCommand.command)) {
       await replyToTweet(
         tweetEvent.id_str,
         `@${tweetEvent.user.screen_name} You need to register your Hedera account first. Please use the "register [accountId]" command to get started.`
@@ -377,7 +452,7 @@ async function processTweetEvent(tweetEvent: TweetEvent): Promise<void> {
         // If it's neither a special command nor a recognized command pattern, send to Eliza
         break;
     }
-    
+     
     if (response) {
       await replyToTweet(tweetEvent.id_str, response);
       console.log(`Processed ${parsedCommand.command} command for tweet ${tweetEvent.id_str}`);
@@ -498,5 +573,76 @@ export const sendTestReply = async (req: Request, res: Response): Promise<Respon
   } catch (error) {
     console.error('Error sending test reply:', error);
     return res.status(500).json({ error: 'Error sending test reply' });
+  }
+};
+
+/**
+ * @api {post} /api/twitter/force-reprocess Force reprocess tweets
+ * @apiName ForceReprocessTweets
+ * @apiGroup Twitter
+ * @apiDescription Force reprocessing of specific tweets or all recent tweets
+ * 
+ * @apiParam {String[]} tweetIds Array of tweet IDs to reprocess (optional)
+ * @apiParam {Boolean} all Set to true to reprocess all fetched tweets (optional)
+ * 
+ * @apiSuccess {Object} result Result of the operation
+ */
+export const forceReprocessTweets = async (req: Request, res: Response): Promise<Response> => {
+  try {
+    // For security, restrict this in production
+    if (process.env.NODE_ENV === 'production' && !process.env.ALLOW_DEV_ENDPOINTS) {
+      return res.status(403).json({ error: 'This endpoint is disabled in production' });
+    }
+    
+    const { tweetIds, all } = req.body;
+    
+    if (!tweetIds && !all) {
+      return res.status(400).json({ 
+        error: 'Missing parameters. Provide either tweetIds array or all=true'
+      });
+    }
+    
+    // Process specific tweet IDs
+    if (tweetIds && Array.isArray(tweetIds)) {
+      const results = await Promise.all(
+        tweetIds.map(async (id) => {
+          const wasProcessed = await forceReprocessTweet(id);
+          return { id, wasProcessed };
+        })
+      );
+      
+      return res.status(200).json({
+        success: true,
+        message: `Successfully removed ${results.filter(r => r.wasProcessed).length} tweets from processed list`,
+        results
+      });
+    }
+    
+    // Process all recent tweets
+    if (all) {
+      const mentions = await fetchRecentMentions();
+      const recentMentions = await filterRecentMentions(mentions);
+      
+      const results = await Promise.all(
+        recentMentions.map(async (mention) => {
+          const id = mention.id_str || mention.id || mention.rest?.id_str || mention.rest?.id;
+          if (!id) return { id: 'unknown', wasProcessed: false };
+          
+          const wasProcessed = await forceReprocessTweet(id);
+          return { id, wasProcessed };
+        })
+      );
+      
+      return res.status(200).json({
+        success: true,
+        message: `Successfully removed ${results.filter(r => r.wasProcessed).length} tweets from processed list`,
+        results
+      });
+    }
+    
+    return res.status(400).json({ error: 'Invalid request' });
+  } catch (error) {
+    console.error('Error forcing tweet reprocessing:', error);
+    return res.status(500).json({ error: 'Error forcing tweet reprocessing' });
   }
 }; 

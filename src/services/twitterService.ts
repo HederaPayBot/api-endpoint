@@ -1,5 +1,6 @@
 import { getTwitterClient } from './twitterClient';
-
+import { sendCommandToEliza, formatElizaResponseForTwitter } from './elizaService';
+import { userService } from './sqliteDbService';
 /**
  * Interface for parsed Twitter mention command
  */
@@ -86,6 +87,9 @@ export function parseTwitterMention(mentionText: string): ParsedCommand {
   const simpleHbarBalancePattern = /(?:my )?hbar balance/i;
   
   const registerPattern = /REGISTER\s+(?:ACCOUNT\s+)?([0-9.]+)/i;
+  // New pattern for general registration intent without an account ID
+  const registerIntentPattern = /REGISTER(?:\s+(?:A\s+)?NEW\s+ACCOUNT|\s+(?:ME|MYSELF)|(?:\s+AN?\s+ACCOUNT)?)/i;
+  
   const createTokenPattern = /CREATE\s+TOKEN\s+([a-zA-Z0-9\s]+)\s+(?:WITH\s+)?SYMBOL\s+([A-Z]+)\s*,?\s*(\d+)\s+DECIMAL(?:S)?\s*,?\s*(?:AND)?\s*(?:STARTING|INITIAL)?\s*SUPPLY\s+(?:OF\s+)?(\d+(?:\.\d+)?)/i;
   
   // Improved greeting pattern
@@ -122,6 +126,32 @@ export function parseTwitterMention(mentionText: string): ParsedCommand {
         originalText: mentionText
       };
     }
+  } else if (registerPattern.test(textWithoutMention)) {
+    // Register with specific account ID
+    const matches = textWithoutMention.match(registerPattern);
+    if (matches) {
+      const accountId = matches[1];
+      return {
+        command: 'REGISTER',
+        accountId,
+        elizaCommand: `Register with Hedera account ${accountId}`,
+        originalText: mentionText
+      };
+    }
+  } else if (registerIntentPattern.test(textWithoutMention)) {
+    // General registration intent without an account ID
+    return {
+      command: 'REGISTER_INTENT',
+      elizaCommand: `Register new account`,
+      originalText: mentionText
+    };
+  } else if (greetingPattern.test(textWithoutAnyMentions)) {
+    // Handle greetings
+    return {
+      command: 'GREETING',
+      elizaCommand: textWithoutAnyMentions.trim(),
+      originalText: mentionText
+    };
   } else if (createTokenPattern.test(textWithoutMention)) {
     const matches = textWithoutMention.match(createTokenPattern);
     if (matches) {
@@ -199,24 +229,6 @@ export function parseTwitterMention(mentionText: string): ParsedCommand {
     return {
       command: 'HBAR_BALANCE',
       elizaCommand: "What's my HBAR balance?",
-      originalText: mentionText
-    };
-  } else if (registerPattern.test(textWithoutMention)) {
-    // Register account
-    const matches = textWithoutMention.match(registerPattern);
-    if (matches) {
-      const accountId = matches[1];
-      return {
-        command: 'REGISTER',
-        elizaCommand: `Register with Hedera account ${accountId}`,
-        originalText: mentionText
-      };
-    }
-  } else if (greetingPattern.test(textWithoutAnyMentions)) {
-    // Handle greetings
-    return {
-      command: 'GREETING',
-      elizaCommand: textWithoutAnyMentions.trim(),
       originalText: mentionText
     };
   } else if (tokenHoldersPattern.test(textWithoutMention)) {
@@ -462,31 +474,9 @@ export async function replyToTweet(tweetId: string, text: string): Promise<any> 
   }
 }
 
-/**
- * Get a Twitter user's details by username
- * 
- * @param username - Twitter username (without @)
- * @returns User data from Twitter
- */
-export async function getTwitterUserByUsername(username: string): Promise<any> {
-  try {
-    const twitterClient = getTwitterClient();
-    if (!twitterClient) {
-      throw new Error('Twitter client not initialized');
-      }
-      
-    // Using agent-twitter-client's getProfile method
-    const profile = await twitterClient.getProfile(username);
-    return profile;
-  } catch (error) {
-    console.error(`Error getting Twitter user @${username}:`, error);
-    throw error;
-  }
-}
 
 /**
- * Get recent mentions of the bot account
- * 
+ * Get recent mentions of the bot account (from the last 5 minutes)
  * @returns Array of mention tweets
  */
 export async function getRecentMentions(): Promise<any[]> {
@@ -499,7 +489,7 @@ export async function getRecentMentions(): Promise<any[]> {
     // Using agent-twitter-client to get tweets and replies
     const botUsername = process.env.TWITTER_BOT_USERNAME || 'HederaPayBot';
     
-    console.log(`Fetching recent tweets mentioning @${botUsername}`);
+    console.log(`Fetching recent tweets mentioning @${botUsername} (last 5 minutes only)`);
     
     // Using search method to find mentions
     // Collect all tweets from the AsyncGenerator into an array
@@ -507,6 +497,17 @@ export async function getRecentMentions(): Promise<any[]> {
     const mentionsGenerator = twitterClient.searchTweets(`@${botUsername}`, 20);
     
     for await (const tweet of mentionsGenerator) {
+      // Get the created_at date - use any type to avoid linter errors
+      const tweetAny = tweet as any;
+      const createdAt = tweetAny.created_at || tweetAny.createdAt || new Date().toISOString();
+      const tweetDate = new Date(createdAt);
+      
+      // Add tweet info to log
+      const id = tweetAny.id_str || tweetAny.id || 
+                (tweetAny.rest ? tweetAny.rest.id_str : null) || 
+                'unknown';
+      console.log(`Found tweet ${id} from ${tweetDate.toISOString()}`);
+      
       searchResults.push(tweet);
       if (searchResults.length >= 20) break; // Limit to 20 tweets
     }
@@ -576,18 +577,18 @@ export function isBalanceQuery(text: string): { isBalanceQuery: boolean; type: '
 /**
  * Generate appropriate balance response based on query type
  * 
- * @param userId - User ID
+ * @param twitterUsername - Twitter username 
  * @param queryType - Type of balance query
  * @param tokenId - Optional token ID for specific token balance
  * @returns Formatted balance response
  */
 export async function generateBalanceResponse(
-  userId: string, 
+  twitterUsername: string, 
   queryType: 'ALL' | 'HBAR' | 'TOKEN',
   tokenId?: string
 ): Promise<string> {
-  // Import the Eliza service to interact with it
-  const { elizaChat } = require('./elizaService');
+  // Import the Eliza service
+
   
   try {
     let balanceCommand = '';
@@ -603,10 +604,20 @@ export async function generateBalanceResponse(
         balanceCommand = `What's my balance for token ${tokenId}?`;
         break;
     }
+  
+    const userInfo=await userService.getUserByTwitterUsername(twitterUsername);
+    const userId = userInfo?.twitter_id;
+    const userName = userInfo?.twitter_username;
+    // Get balance response from Eliza with all required parameters: command, userId, userName
+    const response = await sendCommandToEliza(balanceCommand, userId, userName);
     
-    // Get balance response from Eliza
-    const response = await elizaChat(userId, balanceCommand);
-    return response;
+    // Format the response for Twitter if needed
+    if (Array.isArray(response)) {
+      return formatElizaResponseForTwitter(response);
+    }
+    
+    // If response is already a string, return it directly
+    return typeof response === 'string' ? response : JSON.stringify(response);
   } catch (error) {
     console.error('Error generating balance response:', error);
     return "I'm sorry, I couldn't retrieve your balance information at this time.";
@@ -614,76 +625,122 @@ export async function generateBalanceResponse(
 }
 
 // Store recently processed tweet IDs to avoid duplicates
-const processedTweets = new Set<string>();
+// Changed from simple Set to Map to store timestamp with each tweet ID
+const processedTweets = new Map<string, number>();
 const MAX_PROCESSED_TWEETS = 1000; // Limit the size of the processed tweets set
+const TWEET_EXPIRATION_MS = 5 * 60 * 1000; // 5 minutes in milliseconds (reduced for testing)
 
 /**
  * Check if a tweet has been processed before
  * @param tweetId - ID of the tweet to check
- * @returns True if tweet has been processed before
+ * @returns True if tweet has been processed before and hasn't expired
  */
 export async function hasBeenProcessed(tweetId: string): Promise<boolean> {
-  return processedTweets.has(tweetId);
+  // Remove expired entries before checking
+  cleanExpiredTweets();
+  
+  // Check if tweet exists in the map and hasn't expired
+  const isProcessed = processedTweets.has(tweetId);
+  
+  if (isProcessed) {
+    const processedTime = new Date(processedTweets.get(tweetId)!).toISOString();
+    const elapsedMs = Date.now() - processedTweets.get(tweetId)!;
+    const expiresInMs = Math.max(0, TWEET_EXPIRATION_MS - elapsedMs);
+    console.log(`Tweet ${tweetId} was already processed at ${processedTime} - skipping (expires in ${Math.round(expiresInMs/1000)} seconds)`);
+  } else {
+    console.log(`Tweet ${tweetId} has not been processed before or has expired`);
+  }
+  
+  return isProcessed;
+}
+
+/**
+ * Force a tweet to be reprocessed by removing it from the processed list
+ * @param tweetId - ID of the tweet to force reprocess
+ * @returns True if the tweet was in the processed list and was removed
+ */
+export async function forceReprocessTweet(tweetId: string): Promise<boolean> {
+  const wasProcessed = processedTweets.has(tweetId);
+  if (wasProcessed) {
+    processedTweets.delete(tweetId);
+    console.log(`Forced reprocessing of tweet ${tweetId} by removing from processed list`);
+  }
+  return wasProcessed;
 }
 
 /**
  * Mark a tweet as processed
  * @param tweetId - ID of the tweet to mark as processed
+ * @param skipped - Optional flag to indicate if tweet was skipped due to command filtering
  */
-export async function markAsProcessed(tweetId: string): Promise<void> {
-  // Add to the set of processed tweets
-  processedTweets.add(tweetId);
+export async function markAsProcessed(tweetId: string, skipped: boolean = false): Promise<void> {
+  // Store the current timestamp with the tweet ID
+  const now = Date.now();
+  processedTweets.set(tweetId, now);
+  console.log(`Marked tweet ${tweetId} as processed at ${new Date(now).toISOString()}${skipped ? ' (skipped due to command filtering)' : ''}`);
   
   // If we have too many tweets, remove the oldest ones
   if (processedTweets.size > MAX_PROCESSED_TWEETS) {
-    const iterator = processedTweets.values();
-    processedTweets.delete(iterator.next().value);
+    const oldestTweet = [...processedTweets.entries()]
+      .sort((a, b) => a[1] - b[1])[0][0];
+    processedTweets.delete(oldestTweet);
+    console.log(`Removed oldest tweet ${oldestTweet} due to maximum capacity (${MAX_PROCESSED_TWEETS})`);
   }
 }
 
 /**
- * Get Twitter user information by ID
- * @param userId - Twitter user ID
- * @returns User information
+ * Clean expired tweets from the processed tweets map
  */
-export async function getUserInfo(userId: string): Promise<any> {
-  try {
-    const twitterClient = getTwitterClient();
-    if (!twitterClient) {
-      throw new Error('Twitter client not initialized');
+function cleanExpiredTweets(): void {
+  const now = Date.now();
+  const beforeCount = processedTweets.size;
+  let expiredCount = 0;
+  
+  for (const [tweetId, timestamp] of processedTweets.entries()) {
+    const ageMs = now - timestamp;
+    if (ageMs > TWEET_EXPIRATION_MS) {
+      processedTweets.delete(tweetId);
+      expiredCount++;
+      console.log(`Tweet ${tweetId} expired (age: ${Math.round(ageMs/1000/60)} minutes) - removed from processed list`);
     }
-    
-    // Get the user's profile from Twitter
-    // Since agent-twitter-client doesn't have a direct getUserById method,
-    // we'll handle this differently depending on your Twitter client implementation
-    
-    // For now, return a simple object as placeholder
-    return {
-      username: userId, // Placeholder
-      displayName: userId,
-      id: userId
-    };
-  } catch (error) {
-    console.error(`Error getting user info for ${userId}:`, error);
-    return null;
+  }
+  
+  if (expiredCount > 0) {
+    console.log(`Cleaned up ${expiredCount} expired tweets. Before: ${beforeCount}, After: ${processedTweets.size}`);
   }
 }
 
-// Filter for recent mentions (last 24 hours only)
+
+
+// Filter for recent mentions (last 5 minutes only)
 export async function filterRecentMentions(mentions: any[]): Promise<any[]> {
   if (!mentions || mentions.length === 0) {
     return [];
   }
   
-  const oneDayAgo = new Date();
-  oneDayAgo.setDate(oneDayAgo.getDate() - 1); // 24 hours ago
+  const fiveMinutesAgo = new Date();
+  fiveMinutesAgo.setMinutes(fiveMinutesAgo.getMinutes() - 5); // 5 minutes ago
   
-  return mentions.filter(mention => {
+  console.log(`Filtering tweets: only processing tweets newer than ${fiveMinutesAgo.toISOString()}`);
+  
+  const filteredMentions = mentions.filter(mention => {
     // Get the created_at date, handling different API formats
     const createdAt = mention.created_at || mention.createdAt || new Date().toISOString();
     const mentionDate = new Date(createdAt);
     
-    // Only include mentions from the last 24 hours
-    return mentionDate >= oneDayAgo;
+    const isRecent = mentionDate >= fiveMinutesAgo;
+    
+    if (!isRecent) {
+      console.log(`Skipping old tweet from ${mentionDate.toISOString()} - older than 5 minutes cutoff`);
+    } else {
+      console.log(`Including recent tweet from ${mentionDate.toISOString()}`);
+    }
+    
+    // Only include mentions from the last 5 minutes
+    return isRecent;
   });
+  
+  console.log(`Filtered ${mentions.length} tweets down to ${filteredMentions.length} within the last 5 minutes`);
+  
+  return filteredMentions;
 } 

@@ -1,14 +1,14 @@
 # Hedera Twitter Pay API
 
-Backend server for Hedera Twitter Pay application, now using `agent-twitter-client` for Twitter interactions without requiring a Premium or Enterprise account.
+Backend server for Hedera Twitter Pay application, using `agent-twitter-client` for Twitter interactions without requiring a Premium or Enterprise account.
 
 ## Features
 
-- **Twitter Mention Processing**: Automatically processes mentions to the bot account
-- **Command Parsing**: Converts natural language commands in tweets to structured operations
-- **Hedera Integration**: Executes blockchain operations through Eliza and the Hedera plugin
-- **User Registration**: Allows users to register their Hedera accounts with their Twitter handles
-- **Transaction Support**: Supports transfers, airdrops, token creation, and more
+- **Twitter Integration**: Automated mention processing using polling service
+- **Command Parsing**: Natural language command processing for tweets
+- **Hedera Integration**: Direct blockchain operations through Eliza agent
+- **User Registration**: Twitter-to-Hedera account mapping
+- **Transaction Support**: HBAR transfers, token operations, and more
 
 ## Supported Commands
 
@@ -114,67 +114,68 @@ Add optional parameters:
 
 ## Twitter Integration
 
-This project now uses the `agent-twitter-client` package instead of Twitter's official API. This approach doesn't require a Premium/Enterprise Twitter account and bypasses the need for webhook integration.
+This project uses the `agent-twitter-client` package for Twitter interactions. This approach:
+- Doesn't require a Premium/Enterprise Twitter account
+- Uses polling instead of webhooks
+- Supports all necessary Twitter operations
 
 ### Configure Twitter Credentials
 
-The following environment variables need to be set in your `.env` file:
+Required environment variables in `.env`:
 
-```
+```bash
 # Twitter Login Credentials (Required)
 TWITTER_USERNAME=YourTwitterUsername
 TWITTER_PASSWORD=YourTwitterPassword
 TWITTER_EMAIL=your.email@example.com
 
-# Twitter API v2 credentials (Optional - for advanced features)
+# Twitter Bot Configuration
+TWITTER_BOT_USERNAME=YourBotUsername
+TWITTER_POLL_INTERVAL=60  # Polling interval in seconds
+
+# Optional Twitter API Credentials (for advanced features)
 TWITTER_API_KEY=YourTwitterAPIKey
 TWITTER_API_KEY_SECRET=YourTwitterAPISecret
 TWITTER_ACCESS_TOKEN=YourTwitterAccessToken
 TWITTER_ACCESS_TOKEN_SECRET=YourTwitterAccessTokenSecret
-
-# Twitter Bot Configuration
-TWITTER_BOT_USERNAME=YourBotUsername
-TWITTER_POLL_INTERVAL=60  # How often to check for mentions (in seconds)
 ```
 
 ### How It Works
 
-Instead of using webhooks, this implementation:
+The Twitter integration:
+1. Uses a polling service to check for new mentions
+2. Processes mentions containing commands
+3. Executes commands through the Eliza agent
+4. Sends responses back as tweet replies
 
-1. Regularly polls for new mentions using the polling service
-2. Processes mentions that contain commands
-3. Sends replies using the Twitter client
-
-The polling service automatically starts when you run the server, checking for new mentions at the interval specified in `TWITTER_POLL_INTERVAL`.
+The polling service starts automatically with the server and checks for mentions at the interval specified by `TWITTER_POLL_INTERVAL`.
 
 ## API Endpoints
 
 ### Twitter Endpoints
-
-- `GET /api/twitter/poll-mentions`: Manually trigger polling for mentions
-- `GET /api/twitter/mentions`: Get recent mentions of your bot
-- `POST /api/twitter/reply`: Send a test reply to a tweet
-- `POST /api/twitter/test-command`: Test an Eliza command
+- `GET /api/twitter/poll-mentions`: Manually trigger mention polling
+- `GET /api/twitter/mentions`: Get recent bot mentions
+- `POST /api/twitter/reply`: Send a reply to a tweet
+- `POST /api/twitter/test-command`: Test command processing
+- `POST /api/twitter/test-auto-create-account`: Test automatic account creation
 
 ### User Endpoints
-
 - `POST /api/users/register`: Register a new user
-- `GET /api/users/:twitterId`: Get user information
+- `GET /api/users/profile/:username`: Get user profile
+- `GET /api/users/link-status/:username`: Check Hedera account link status
 
 ### Eliza Endpoints
-
-- `POST /api/eliza/message`: Send a message to Eliza
-- `GET /api/eliza/health`: Check Eliza service status
+- `POST /api/eliza/message`: Send message to Eliza
+- `GET /api/eliza/status`: Check Eliza service status
 
 ## Development
 
-1. Start in development mode: `pnpm dev`
-2. The server will restart automatically when source files change
+1. Start in development mode:
+```bash
+pnpm dev
+```
 
-## Testing Twitter Integration
-
-You can test the Twitter integration with:
-
+2. Test Twitter integration:
 ```bash
 # Manually trigger mention processing
 curl http://localhost:5001/api/twitter/poll-mentions
@@ -182,34 +183,26 @@ curl http://localhost:5001/api/twitter/poll-mentions
 # Test a reply
 curl -X POST http://localhost:5001/api/twitter/reply \
   -H "Content-Type: application/json" \
-  -d '{"tweetId": "1234567890", "text": "Hello from the API!"}'
+  -d '{"tweetId": "1234567890", "text": "Hello!"}'
 ```
 
 ## Debugging
 
-If you encounter issues with the Twitter client:
+If you encounter Twitter client issues:
 
-1. Check the server logs for error messages
-2. Verify your Twitter credentials are correct 
-3. Make sure the TWITTER_BOT_USERNAME is set correctly
-4. Try increasing TWITTER_POLL_INTERVAL if you're facing rate limits
+1. Check server logs for error messages
+2. Verify Twitter credentials in `.env`
+3. Ensure `TWITTER_BOT_USERNAME` is correct
+4. Try increasing `TWITTER_POLL_INTERVAL` if rate limited
+5. Check Eliza service connection
 
-## Setup and Configuration
+## Environment Variables
 
-### Prerequisites
+Create a `.env` file with:
 
-- Node.js 16+
-- Twitter Developer Account with API access
-- Hedera TestNet or MainNet account
-- ElizaOS instance with Hedera plugin
-
-### Environment Variables
-
-Create a `.env` file in the root directory with the following variables:
-
-```env
+```bash
 # Server configuration
-PORT=5000
+PORT=5001
 NODE_ENV=development
 
 # Hedera configuration
@@ -218,77 +211,23 @@ HEDERA_PRIVATE_KEY=302e...
 HEDERA_NETWORK_TYPE=testnet
 HEDERA_KEY_TYPE=ED25519
 
-# Twitter API configuration
-TWITTER_API_KEY=xxx
-TWITTER_API_KEY_SECRET=xxx
-TWITTER_ACCESS_TOKEN=xxx
-TWITTER_ACCESS_TOKEN_SECRET=xxx
-TWITTER_BEARER_TOKEN=xxx
-TWITTER_BOT_USERNAME=HederaPayBot
+# Twitter configuration (see above)
 
 # Eliza configuration
 ELIZA_API_URL=http://localhost:3000
 ELIZA_AGENT_NAME=Hedera Helper
 ```
 
-### Installation
+## Production Deployment
 
-1. Clone the repository
-2. Install dependencies:
+For production:
+- Use PM2 for process management
+- Set up NGINX reverse proxy
+- Enable SSL/TLS
+- Use secure key management
+- Monitor the polling service
 
-```bash
-cd backend/api-endpoint
-npm install
-```
-
-3. Build the project:
-
-```bash
-npm run build
-```
-
-4. Start the server:
-
-```bash
-npm start
-```
-
-For development:
-
-```bash
-npm run dev
-```
-
-## Architecture
-
-### Components
-
-- **Twitter Webhook Handler**: Processes Twitter account activity events
-- **Command Parser**: Extracts structured commands from tweets
-- **Eliza Service**: Communicates with the Eliza agent for Hedera operations
-- **Database Service**: Stores user registrations and transaction history
-
-### Flow
-
-1. User mentions the bot with a command
-2. Twitter webhook delivers the mention to our API
-3. API parses the command and extracts parameters
-4. Special commands (like registration) are handled directly
-5. Blockchain commands are forwarded to Eliza agent
-6. Eliza executes the operation via Hedera plugin
-7. Response is sent back to the user as a tweet reply
-
-## Deployment
-
-### Production Setup
-
-For production, consider using:
-- PM2 for process management
-- NGINX for reverse proxy
-- SSL certificates for secure communication
-
-Example PM2 configuration:
-
+Example PM2 config:
 ```json
 {
   "apps": [{
@@ -296,37 +235,29 @@ Example PM2 configuration:
     "script": "dist/index.js",
     "instances": 1,
     "exec_mode": "fork",
-    "env": {
+    "env_production": {
       "NODE_ENV": "production",
-      "PORT": 5000
+      "PORT": 5001
     }
   }]
 }
 ```
 
-### Docker Support
-
-A Dockerfile is provided for containerized deployment:
-
-```bash
-docker build -t hedera-twitter-pay .
-docker run -p 5000:5000 --env-file .env hedera-twitter-pay
-```
-
 ## Security Considerations
 
-- All Twitter webhook endpoints validate the request source
-- Sensitive operations require user registration first
-- Environment variables should be securely managed
-- In production, secure API keys and private keys with vault solutions
+- Twitter credentials are stored securely
+- Hedera private keys are encrypted
+- Rate limiting is implemented
+- Input validation on all endpoints
+- Secure environment variable handling
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions welcome! Please submit pull requests.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+MIT License - see LICENSE file for details.
 
 ## Acknowledgments
 
