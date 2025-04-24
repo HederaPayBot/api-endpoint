@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - REBUILD_SQLITE=true
+    container_name: hedera-twitter-api
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./db:/app/db
+      - ./.env:/app/.env
+    environment:
+      - NODE_ENV=production
+      - HEDERA_NETWORK=testnet
+      # Specify the SQLite database path
+      - SQLITE_DB_PATH=/app/db/hedera-twitter.db
+      # Force SQLite to be built from source
+      - npm_config_build_from_source=true
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+networks:
+  default:
+    name: hedera-twitter-network 

@@ -1,0 +1,502 @@
+import { Request, Response } from 'express';
+import { 
+  parseTwitterMention, 
+  replyToTweet, 
+  getRecentMentions as fetchRecentMentions,
+  isBalanceQuery,
+  generateBalanceResponse,
+  hasBeenProcessed,
+  markAsProcessed,
+  getUserInfo,
+  filterRecentMentions,
+  ParsedCommand
+} from '../services/twitterService';
+import { 
+  processSpecialCommand, 
+  getHederaAccountFromTwitter
+} from '../services/elizaService';
+import {
+  handleSendCommand,
+  handleBalanceCommand,
+  handleHbarBalanceCommand,
+  handleCreateTokenCommand,
+  handleAirdropCommand,
+  handleTokenHoldersCommand,
+  handleMintTokenCommand,
+  handleMintNftCommand,
+  handleRejectTokenCommand,
+  handleAssociateTokenCommand,
+  handleDissociateTokenCommand,
+  handleTransferHbarCommand,
+  handleTransferHtsCommand,
+  handleClaimAirdropCommand,
+  handlePendingAirdropsCommand,
+  handleGetTopicInfoCommand,
+  handleSubmitTopicMessageCommand,
+  handleCreateTopicCommand,
+  handleGetTopicMessagesCommand,
+  handleDeleteTopicCommand
+} from '../services/commandHandlers';
+
+// Twitter controller
+// These endpoints handle Twitter API interactions
+
+/**
+ * @api {get} /api/twitter/poll-mentions Poll for recent mentions and process them
+ * @apiName PollMentions
+ * @apiGroup Twitter
+ * @apiDescription Poll for recent mentions and process them
+ * This replaces the webhook functionality with a polling approach
+ * 
+ * @apiSuccess {Object} response Information about processed mentions
+ */
+export const processMentions = async (req: Request, res: Response): Promise<Response> => {
+  try {
+    // Get recent mentions
+    const mentions = await fetchRecentMentions();
+    
+    if (!mentions || mentions.length === 0) {
+      return res.status(200).json({ 
+        status: 'success', 
+        message: 'No new mentions found',
+        processed: 0
+      });
+    }
+    
+    // Filter to only include mentions from the last 24 hours
+    const recentMentions = await filterRecentMentions(mentions);
+    
+    if (recentMentions.length === 0) {
+      return res.status(200).json({ 
+        status: 'success', 
+        message: 'No recent mentions found in the last 24 hours',
+        processed: 0
+      });
+    }
+    
+    let processed = 0;
+    const errors: any[] = [];
+    
+    // Sort mentions by creation date (oldest first) to process in chronological order
+    const sortedMentions = [...recentMentions].sort((a, b) => {
+      const dateA = a.created_at || a.createdAt || new Date().toISOString();
+      const dateB = b.created_at || b.createdAt || new Date().toISOString();
+      return new Date(dateA).getTime() - new Date(dateB).getTime();
+    });
+    
+    // Process each mention
+    for (const mention of sortedMentions) {
+      if (!mention) {
+        console.log('Skipping undefined mention');
+        continue;
+      }
+      
+      try {
+        // Access properties safely with defaults
+        const id = mention.id_str || mention.id || mention.rest?.id_str || mention.rest?.id;
+        
+        if (!id) {
+          console.log('Skipping mention with no ID:', mention);
+          continue;
+        }
+        
+        // Skip if we've already processed this tweet
+        if (await hasBeenProcessed(id)) {
+          console.log(`Skipping already processed tweet ${id}`);
+          continue;
+        }
+        
+        // Convert to the format expected by processTweetEvent
+        const tweetEvent = {
+          id_str: id,
+          text: mention.text || mention.full_text || mention.rest?.text || '',
+          user: {
+            id_str: mention.user?.id_str || mention.user?.id || mention.author_id || mention.userId || 'unknown',
+            screen_name: mention.user?.screen_name || mention.username || mention.author_username || 'unknown'
+          },
+          in_reply_to_status_id_str: mention.in_reply_to_status_id_str || mention.referenced_tweets?.[0]?.id
+        };
+        
+        // Check if this is a valid mention with bot username
+        const botUsername = process.env.TWITTER_BOT_USERNAME || 'HederaPayBot';
+        if (!tweetEvent.text.toLowerCase().includes(`@${botUsername.toLowerCase()}`)) {
+          console.log(`Skipping tweet ${id} - Not mentioning @${botUsername}`);
+          await markAsProcessed(id); // Mark as processed to avoid checking again
+          continue;
+        }
+        
+        // Check if this is a supported command type
+        const parsedCommand = parseTwitterMention(tweetEvent.text);
+        
+        // Only process specific supported command types
+        const supportedCommands = [
+          'SEND', 'BALANCE', 'HBAR_BALANCE', 'CREATE_TOKEN', 'AIRDROP', 
+          'REGISTER', 'TOKEN_HOLDERS', 'MINT_TOKEN', 'MINT_NFT', 
+          'REJECT_TOKEN', 'ASSOCIATE_TOKEN', 'DISSOCIATE_TOKEN', 
+          'TRANSFER_HBAR', 'TRANSFER_HTS', 'CLAIM_AIRDROP', 
+          'PENDING_AIRDROPS', 'GET_TOPIC_INFO', 'SUBMIT_TOPIC_MESSAGE', 
+          'CREATE_TOPIC', 'GET_TOPIC_MESSAGES', 'DELETE_TOPIC'
+        ];
+        if (!supportedCommands.includes(parsedCommand.command) && 
+            !isBalanceQuery(tweetEvent.text).isBalanceQuery) {
+          console.log(`Skipping tweet ${id} - Not a supported command: ${parsedCommand.command}`);
+          await markAsProcessed(id); // Mark as processed to avoid checking again
+          continue;  
+        }
+        
+        await processTweetEvent(tweetEvent);
+        processed++;
+        
+        // Mark as processed
+        await markAsProcessed(id);
+      } catch (error) {
+        console.error(`Error processing mention:`, error);
+        errors.push({
+          error: error.message || 'Unknown error'
+        });
+      }
+    }
+    
+    return res.status(200).json({
+      status: 'success',
+      processed,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (error) {
+    console.error('Error polling for mentions:', error);
+    return res.status(500).json({ 
+      error: 'Failed to poll for mentions',
+      message: error.message
+    });
+  }
+};
+
+// Tweet event types
+interface TwitterUser {
+  id_str: string;
+  screen_name: string;
+}
+
+interface TweetEvent {
+  id_str: string;
+  text: string;
+  user: TwitterUser;
+  in_reply_to_status_id_str?: string;
+}
+
+/**
+ * Process a tweet event asynchronously
+ * This function handles the core logic of processing Twitter mentions
+ */
+async function processTweetEvent(tweetEvent: TweetEvent): Promise<void> {
+  try {
+    if (!shouldProcessTweet(tweetEvent)) {
+      console.log(`Skipping tweet: ${tweetEvent.id_str} - Not relevant for processing`);
+      return;
+    }
+    
+    console.log(`Processing tweet: ${tweetEvent.text} from @${tweetEvent.user.screen_name}`);
+    
+    // Check if the user is registered with a Hedera account
+    const hederaAccount = getHederaAccountFromTwitter(tweetEvent.user.screen_name);
+    
+    // Check for balance queries directly using our improved detection
+    const balanceCheck = isBalanceQuery(tweetEvent.text);
+    
+    if (balanceCheck.isBalanceQuery && balanceCheck.type !== 'NONE') {
+      console.log(`Detected balance query of type: ${balanceCheck.type}`);
+      
+      // If user isn't registered, tell them to register first
+      if (!hederaAccount) {
+        await replyToTweet(
+          tweetEvent.id_str,
+          `@${tweetEvent.user.screen_name} You need to register your Hedera account first to check balances. Please use the "register [accountId]" command.`
+        );
+        return;
+      }
+      
+      // Generate balance response using our specialized function
+      const balanceResponse = await generateBalanceResponse(
+        tweetEvent.user.id_str,
+        balanceCheck.type,
+        balanceCheck.tokenId
+      );
+      
+      // Send response directly
+      await replyToTweet(
+        tweetEvent.id_str,
+        `@${tweetEvent.user.screen_name} ${balanceResponse}`
+      );
+      
+      console.log(`Processed balance query for tweet ${tweetEvent.id_str}`);
+      return;
+    }
+    
+    // Parse the mention into a structured command
+    const parsedCommand = parseTwitterMention(tweetEvent.text);
+    console.log('Parsed command:', JSON.stringify(parsedCommand));
+    
+    // Handle registration command specially
+    if (parsedCommand.command === 'REGISTER') {
+      const response = await processSpecialCommand(
+        parsedCommand.command,
+        parsedCommand,
+      tweetEvent.user.id_str, 
+      tweetEvent.user.screen_name
+    );
+    
+      if (response) {
+        // Send the response directly
+        await replyToTweet(
+          tweetEvent.id_str,
+          `@${tweetEvent.user.screen_name} ${response.text}`
+        );
+        
+        console.log(`Processed special command "${parsedCommand.command}" for tweet ${tweetEvent.id_str}`);
+        return;
+      }
+    }
+    
+    // For all other commands, check if user is registered first
+    if (!hederaAccount && !['REGISTER', 'GREETING'].includes(parsedCommand.command)) {
+      await replyToTweet(
+        tweetEvent.id_str,
+        `@${tweetEvent.user.screen_name} You need to register your Hedera account first. Please use the "register [accountId]" command to get started.`
+      );
+      console.log(`User ${tweetEvent.user.screen_name} not registered, asking to register`);
+      return;
+    }
+    
+    // Check if this is a balance command that was detected by the parser
+    if (parsedCommand.command === 'BALANCE' || parsedCommand.command === 'HBAR_BALANCE') {
+      console.log(`Detected ${parsedCommand.command} command via parser`);
+      
+      const queryType = parsedCommand.command === 'BALANCE' ? 'ALL' : 'HBAR';
+      
+      // Generate balance response using our specialized function
+      const balanceResponse = await generateBalanceResponse(
+        tweetEvent.user.id_str,
+        queryType
+      );
+      
+      // Send response directly
+      await replyToTweet(
+        tweetEvent.id_str,
+        `@${tweetEvent.user.screen_name} ${balanceResponse}`
+      );
+    
+      console.log(`Processed ${parsedCommand.command} command for tweet ${tweetEvent.id_str}`);
+      return;
+    }
+    
+    // Process the command based on type
+    let response: string | null = null;
+    
+    switch (parsedCommand.command) {
+      case 'SEND':
+        response = await handleSendCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      case 'BALANCE':
+        response = await handleBalanceCommand(tweetEvent.user.screen_name);
+        break;
+        
+      case 'HBAR_BALANCE':
+        response = await handleHbarBalanceCommand(tweetEvent.user.screen_name);
+        break;
+        
+      case 'CREATE_TOKEN':
+        response = await handleCreateTokenCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      case 'AIRDROP':
+        response = await handleAirdropCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+      
+      case 'TOKEN_HOLDERS':
+        response = await handleTokenHoldersCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      case 'MINT_TOKEN':
+        response = await handleMintTokenCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      case 'MINT_NFT':
+        response = await handleMintNftCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      case 'REJECT_TOKEN':
+        response = await handleRejectTokenCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      case 'ASSOCIATE_TOKEN':
+        response = await handleAssociateTokenCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      case 'DISSOCIATE_TOKEN':
+        response = await handleDissociateTokenCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      case 'TRANSFER_HBAR':
+        response = await handleTransferHbarCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      case 'TRANSFER_HTS':
+        response = await handleTransferHtsCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      case 'CLAIM_AIRDROP':
+        response = await handleClaimAirdropCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      case 'PENDING_AIRDROPS':
+        response = await handlePendingAirdropsCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      case 'GET_TOPIC_INFO':
+        response = await handleGetTopicInfoCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      case 'SUBMIT_TOPIC_MESSAGE':
+        response = await handleSubmitTopicMessageCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      case 'CREATE_TOPIC':
+        response = await handleCreateTopicCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      case 'GET_TOPIC_MESSAGES':
+        response = await handleGetTopicMessagesCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      case 'DELETE_TOPIC':
+        response = await handleDeleteTopicCommand(parsedCommand, tweetEvent.user.screen_name);
+        break;
+        
+      default:
+        // If it's neither a special command nor a recognized command pattern, send to Eliza
+        break;
+    }
+    
+    if (response) {
+      await replyToTweet(tweetEvent.id_str, response);
+      console.log(`Processed ${parsedCommand.command} command for tweet ${tweetEvent.id_str}`);
+      return;
+    }
+    
+    // Handle greetings
+    if (parsedCommand.command === 'GREETING') {
+      await replyToTweet(
+        tweetEvent.id_str,
+        `Hello @${tweetEvent.user.screen_name}! I'm your Hedera Helper bot. How can I assist you today?`
+      );
+      console.log(`Processed greeting for tweet ${tweetEvent.id_str}`);
+      return;
+    }
+    
+    // Fall back to a generic message for unrecognized commands
+    await replyToTweet(
+      tweetEvent.id_str,
+      `@${tweetEvent.user.screen_name} I didn't understand that command. Try one of these:
+- "check my balance"
+- "send 5 HBAR to @user"
+- "register 0.0.12345"
+- "create token GameCoin with symbol GC, 2 decimals, and starting supply of 1000000"
+- "show token holders for 0.0.12345"
+- "airdrop 10 TOKEN to @user1 @user2"
+- "mint 100 tokens 0.0.12345"
+- "associate my wallet with token 0.0.12345"
+- "transfer 10 HBAR to account 0.0.12345"
+- "create topic with memo: test memo"`
+    );
+  } catch (error) {
+    console.error('Error processing tweet event:', error);
+    
+    // Attempt to send an error reply to the user
+    try {
+      await replyToTweet(
+        tweetEvent.id_str,
+        `@${tweetEvent.user.screen_name} Sorry, I encountered an error processing your request. Please try again later.`
+      );
+    } catch (replyError) {
+      console.error('Error sending error reply:', replyError);
+    }
+    
+    throw error;
+  }
+}
+
+/**
+ * Determine if a tweet should be processed
+ * Checks if the tweet is from our bot (to avoid loops) and if it's a mention
+ */
+function shouldProcessTweet(tweetEvent: TweetEvent): boolean {
+  const botUsername = process.env.TWITTER_BOT_USERNAME || 'HederaPayBot';
+  
+  // Skip processing if the tweet is from our own bot
+  if (tweetEvent.user.screen_name.toLowerCase() === botUsername.toLowerCase()) {
+    return false;
+  }
+  
+  // Only process mentions of our bot
+  if (!tweetEvent.text.toLowerCase().includes(`@${botUsername.toLowerCase()}`)) {
+    return false;
+  }
+  
+  return true;
+}
+
+/**
+ * @api {get} /api/twitter/mentions Get recent mentions
+ * @apiName GetRecentMentions
+ * @apiGroup Twitter
+ * @apiDescription Get recent mentions of the bot's Twitter account
+ * 
+ * @apiSuccess {Object[]} mentions Array of recent mentions
+ */
+export const getRecentMentions = async (req: Request, res: Response): Promise<Response> => {
+  try {
+    // For security, restrict this in production
+    if (process.env.NODE_ENV === 'production' && !process.env.ALLOW_DEV_ENDPOINTS) {
+      return res.status(403).json({ error: 'This endpoint is disabled in production' });
+    }
+    
+    const mentions = await fetchRecentMentions();
+    return res.status(200).json({ mentions });
+  } catch (error) {
+    console.error('Error fetching recent mentions:', error);
+    return res.status(500).json({ error: 'Error fetching recent mentions' });
+  }
+};
+
+/**
+ * @api {post} /api/twitter/reply Send a test reply
+ * @apiName SendTestReply
+ * @apiGroup Twitter
+ * @apiDescription Send a test reply to a tweet (for development)
+ * 
+ * @apiParam {String} tweet_id ID of the tweet to reply to
+ * @apiParam {String} text Text of the reply
+ * 
+ * @apiSuccess {Object} result Result of the Twitter API call
+ */
+export const sendTestReply = async (req: Request, res: Response): Promise<Response> => {
+  try {
+    // For security, restrict this in production
+    if (process.env.NODE_ENV === 'production' && !process.env.ALLOW_DEV_ENDPOINTS) {
+      return res.status(403).json({ error: 'This endpoint is disabled in production' });
+    }
+    
+    const { tweet_id, text } = req.body;
+    
+    if (!tweet_id || !text) {
+      return res.status(400).json({ error: 'Missing tweet_id or text parameter' });
+    }
+    
+    const result = await replyToTweet(tweet_id, text);
+    return res.status(200).json({ result });
+  } catch (error) {
+    console.error('Error sending test reply:', error);
+    return res.status(500).json({ error: 'Error sending test reply' });
+  }
+}; 
