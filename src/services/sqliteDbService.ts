@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
+
 // Define interfaces for our database tables
 interface User {
   id: number;
@@ -191,6 +192,58 @@ export const userService = {
       console.error(`Error updating user ID (${userId}):`, error);
       return undefined;
     }
+  },
+
+  // Find user by Hedera account ID
+  findUserByHederaAccountId: (hederaAccountId: string): User | null => {
+    try {
+      const db = new Database(path.resolve(dbDir, 'hedPay.sqlite'));
+      
+      // First get the user_id from the hedera_accounts table
+      const accountResult = db.prepare(`
+        SELECT user_id 
+        FROM hedera_accounts 
+        WHERE account_id = ?
+      `).get(hederaAccountId) as { user_id: number } | undefined;
+      
+      if (!accountResult) {
+        return null;
+      }
+      
+      const userId = accountResult.user_id;
+      
+      // Then get the user record
+      const userResult = db.prepare(`
+        SELECT id, twitter_username, twitter_id, created_at, updated_at
+        FROM users 
+        WHERE id = ?
+      `).get(userId) as {
+        id: number;
+        twitter_username: string;
+        twitter_id: string;
+        created_at: string;
+        updated_at: string;
+      } | undefined;
+      
+      db.close();
+      
+      if (!userResult) {
+        return null;
+      }
+      
+      // Create user object with Hedera account
+      return {
+        id: userResult.id,
+        twitter_username: userResult.twitter_username,
+        twitter_id: userResult.twitter_id,
+        created_at: userResult.created_at,
+        updated_at: userResult.updated_at,
+        hedera_account_id: hederaAccountId
+      };
+    } catch (error) {
+      console.error('Error finding user by Hedera account ID:', error);
+      return null;
+    }
   }
 };
 
@@ -304,27 +357,10 @@ export const hederaAccountService = {
       const stmt = db.prepare(
         `SELECT * FROM hedera_accounts WHERE user_id = ? AND is_primary = 1`
       );
+      console.log("stmt",stmt)
       return stmt.get(userId) as HederaAccount | undefined;
     } catch (error) {
       console.error(`Error getting primary Hedera account for user ID (${userId}):`, error);
-      return undefined;
-    }
-  },
-
-  /**
-   * Find user by Hedera account ID
-   * @param hederaAccountId - Hedera account ID
-   * @returns User ID linked to the account or undefined if not found
-   */
-  findUserByHederaAccount: (hederaAccountId: string): number | undefined => {
-    try {
-      const stmt = db.prepare(
-        `SELECT user_id FROM hedera_accounts WHERE account_id = ?`
-      );
-      const result = stmt.get(hederaAccountId) as { user_id: number } | undefined;
-      return result ? result.user_id : undefined;
-    } catch (error) {
-      console.error(`Error finding user by Hedera account (${hederaAccountId}):`, error);
       return undefined;
     }
   },
@@ -343,11 +379,13 @@ export const hederaAccountService = {
   } | undefined => {
     try {
       const user = userService.getUserByTwitterUsername(twitterUsername);
+      console.log("user",user)
       if (!user) {
         return undefined;
       }
       
       const account = hederaAccountService.getPrimaryAccountForUser(user.id);
+      console.log("account",account)
       if (!account || !account.private_key || !account.public_key) {
         return undefined;
       }
@@ -364,7 +402,126 @@ export const hederaAccountService = {
       return undefined;
     }
   }
+  
 };
+
+/**
+ * Saves a transaction to the local database
+ * 
+ * @param senderUsername - Twitter username of the sender
+ * @param recipientUsername - Twitter username of the recipient (if applicable)
+ * @param transactionId - Hedera transaction ID
+ * @param transactionType - Type of transaction (TRANSFER, MINT_NFT, CREATE_TOKEN, etc.)
+ * @param amount - Amount of tokens (as string)
+ * @param tokenId - Token ID or HBAR for cryptocurrency
+ * @param memo - Transaction memo or description
+ * @param status - Transaction status (SUCCESS, FAILED)
+ * @param networkType - Network type (testnet, mainnet)
+ * @returns Promise<boolean> - Whether the operation was successful
+ */
+export async function saveTransaction(
+  senderUsername: string,
+  recipientUsername: string | null,
+  transactionId: string,
+  transactionType: string,
+  amount: string,
+  tokenId: string,
+  memo: string,
+  status: string,
+  networkType: string
+): Promise<boolean> {
+  try {
+    const db = await getDb();
+    
+    // Get the user IDs for sender and recipient
+    const senderId = await getUserIdFromTwitterUsername(senderUsername);
+    
+    if (!senderId) {
+      console.log(`Could not find user ID for sender @${senderUsername}`);
+      return false;
+    }
+    
+    let recipientId = null;
+    if (recipientUsername) {
+      recipientId = await getUserIdFromTwitterUsername(recipientUsername);
+    }
+    
+    // Insert transaction into the database
+    const query = `
+      INSERT INTO transactions (
+        sender_id, 
+        recipient_id, 
+        transaction_id, 
+        transaction_type, 
+        amount, 
+        token_id, 
+        memo, 
+        status, 
+        network_type, 
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    
+    const params = [
+      senderId,
+      recipientId,
+      transactionId,
+      transactionType,
+      amount,
+      tokenId,
+      memo,
+      status,
+      networkType,
+      new Date().toISOString()
+    ];
+    
+    await db.run(query, params);
+    
+    console.log(`Transaction ${transactionId} saved to database`);
+    return true;
+  } catch (error) {
+    console.error('Error saving transaction to database:', error);
+    return false;
+  }
+}
+
+/**
+ * Helper function to get user ID from Twitter username
+ * @param {string} username - Twitter username
+ * @returns {Promise<string|null>} - User ID or null if not found
+ */
+async function getUserIdFromTwitterUsername(username) {
+  try {
+
+    // Query database first to check if the user already exists
+    const db = await getDb();
+    const user = await db.get(`SELECT id FROM users WHERE twitter_username = ?`, [username]);
+    
+    if (user) {
+      return user.id;
+    }
+    
+    return null;
+  } catch (error) {
+    console.error(`Error getting user ID from Twitter username: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Gets the database connection
+ * @returns A Promise that resolves to the database connection
+ */
+async function getDb() {
+  // Assuming you're using a sqlite3 library with promises like sqlite or better-sqlite3 with promise wrapper
+  const sqlite3 = require('sqlite3').verbose();
+  const { open } = require('sqlite');
+  
+  return open({
+    filename: process.env.DATABASE_PATH || './db/hedPay.sqlite',
+    driver: sqlite3.Database
+  });
+}
 
 // Export a combined service for convenience
 export default {

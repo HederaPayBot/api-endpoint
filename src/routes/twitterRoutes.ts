@@ -158,6 +158,36 @@ router.post('/test-auto-create-account', async (req, res) => {
   }
 });
 
+// Endpoint for frontend to send a command to Eliza using Twitter user info
+// This allows logged-in users to interact with Eliza via the API
+import { sendCommandToEliza } from '../services/elizaService';
+
+router.post('/command', async (req, res) => {
+  try {
+    const { command,  userName } = req.body;
+
+    if (!command  || !userName) {
+      return res.status(400).json({ error: 'command, userId, and userName are required' });
+    }
+
+    // Forward the command to Eliza
+    const elizaResponse = await sendCommandToEliza(command, userName,userName);
+
+    return res.status(200).json({
+      success: true,
+      elizaResponse
+    });
+  } catch (error) {
+    console.error('Error forwarding command to Eliza:', error);
+    return res.status(500).json({ 
+      success: false, 
+      error: 'Failed to forward command to Eliza',
+      message: error.message
+    });
+  }
+});
+
+
 // Force reprocessing of tweets
 router.post('/force-reprocess', forceReprocessTweets);
 

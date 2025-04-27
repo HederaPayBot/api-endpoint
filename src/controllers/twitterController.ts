@@ -244,7 +244,7 @@ async function processTweetEvent(tweetEvent: TweetEvent): Promise<void> {
       
       // Generate balance response using our specialized function
       const balanceResponse = await generateBalanceResponse(
-        tweetEvent.user.id_str,
+        tweetEvent.user.screen_name,
         balanceCheck.type,
         balanceCheck.tokenId
       );
@@ -342,27 +342,6 @@ async function processTweetEvent(tweetEvent: TweetEvent): Promise<void> {
       return;
     }
     
-    // Check if this is a balance command that was detected by the parser
-    if (parsedCommand.command === 'BALANCE' || parsedCommand.command === 'HBAR_BALANCE') {
-      console.log(`Detected ${parsedCommand.command} command via parser`);
-      
-      const queryType = parsedCommand.command === 'BALANCE' ? 'ALL' : 'HBAR';
-      
-      // Generate balance response using our specialized function
-      const balanceResponse = await generateBalanceResponse(
-        tweetEvent.user.id_str,
-        queryType
-      );
-      
-      // Send response directly
-      await replyToTweet(
-        tweetEvent.id_str,
-        `@${tweetEvent.user.screen_name} ${balanceResponse}`
-      );
-    
-      console.log(`Processed ${parsedCommand.command} command for tweet ${tweetEvent.id_str}`);
-      return;
-    }
     
     // Process the command based on type
     let response: string | null = null;

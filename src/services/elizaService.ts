@@ -73,7 +73,7 @@ export async function sendCommandToEliza(command: string, userId: string, userNa
   try {
     // Get the URL for the Eliza API
     const elizaUrl = process.env.ELIZA_API_URL || 'http://localhost:3000';
-    const elizaAgent = process.env.ELIZA_AGENT_NAME || 'Hedera Helper';
+    const elizaAgent = process.env.ELIZA_AGENT_NAME || 'HederaBot';
     const endpoint = `${elizaUrl}/${encodeURIComponent(elizaAgent)}/message`;
 
     console.log(`Sending command to Eliza at ${endpoint}`);
@@ -81,6 +81,7 @@ export async function sendCommandToEliza(command: string, userId: string, userNa
 
     // Get the user's Hedera credentials using hederaAccountService.getHederaCredentials
     const credentials = hederaAccountService.getHederaCredentials(userName);
+    console.log("credentials",credentials)
     if (!credentials) {
       throw new Error(`User ${userName} does not have registered Hedera credentials.`);
     }
@@ -93,7 +94,7 @@ export async function sendCommandToEliza(command: string, userId: string, userNa
 
     // Prepare the request body, including credentials
     const requestData = {
-      message: command,
+      text: command,
       userId: userId,
       userName: userName,
       hederaCredentials: {
@@ -104,10 +105,15 @@ export async function sendCommandToEliza(command: string, userId: string, userNa
         keyType
       }
     };
-
+    console.log("requestData",requestData)
     // Send the request to Eliza
     const response = await axios.post(endpoint, requestData);
+    console.log("response",response)
     const responseData = response.data;
+    responseData.map((item: any) => {
+      console.log("item",item.content)
+    })
+    console.log("responseData",responseData)
 
     // Validate Eliza's response
     if (!responseData || !Array.isArray(responseData)) {
@@ -127,7 +133,7 @@ export async function sendCommandToEliza(command: string, userId: string, userNa
 
     // Generate fallback response for Eliza service failure
     return [{
-      user: 'Hedera Helper',
+      user: 'HederaBot',
       text: 'Sorry, I encountered an issue communicating with the Hedera network. Please try again later.'
     }];
   }
@@ -139,21 +145,21 @@ export async function sendCommandToEliza(command: string, userId: string, userNa
 function generateFallbackResponse(command: string, isBalanceCommand: boolean, isGreetingCommand: boolean): any[] {
   if (isGreetingCommand) {
     return [{
-      user: 'Hedera Helper',
-      text: 'Hello! I\'m your Hedera Helper. How can I assist you with your Hedera account today?'
+      user: 'HederaBot',
+      text: 'Hello! I\'m your Hedera Bot. How can I assist you with your Hedera account today?'
     }];
   }
   
   if (isBalanceCommand) {
     return [{
-      user: 'Hedera Helper',
+      user: 'HederaBot',
       text: 'I\'m unable to retrieve your balance information at the moment. Please make sure you\'ve registered your Hedera account with me using the "register" command.'
     }];
   }
   
   // Default fallback response
   return [{
-    user: 'Hedera Helper',
+    user: 'HederaBot',
     text: 'I understand you want to interact with the Hedera network. To help you better, please try one of these commands: check my balance, send tokens, or create token.'
   }];
 }

@@ -7,7 +7,7 @@ import { sendCommandToEliza, formatElizaResponseForTwitter } from './elizaServic
 import { getHederaAccountFromTwitter } from './elizaService';
 import { ParsedCommand } from './twitterService';
 import { createAccountForTwitterUser } from './hederaAccountService';
-
+import { saveTransaction } from './sqliteDbService';
 /**
  * Handle SEND command
  * @param command - Parsed command data
@@ -15,7 +15,7 @@ import { createAccountForTwitterUser } from './hederaAccountService';
  * @returns Response text
  */
 
-//TODO: if recipent account dosent exist create account for them 
+
 export async function handleSendCommand(command: ParsedCommand, username: string): Promise<string> {
   try {
     // First check if user is registered
@@ -64,6 +64,33 @@ export async function handleSendCommand(command: ParsedCommand, username: string
       username
     );
     
+    // Extract transaction ID from Eliza response if available
+    let transactionId = null;
+    let status = 'SUCCESS';
+    
+    for (const item of elizaResponse) {
+      if (item && item.action === 'HEDERA_TRANSACTION_EXECUTED' && item.data) {
+        transactionId = item.data.transactionId;
+        status = item.data.status || 'SUCCESS';
+        break;
+      }
+    }
+    
+    // Save transaction to database if we have a transaction ID
+    if (transactionId) {
+      saveTransaction(
+        username,
+        receiverUsername,
+        transactionId,
+        'TRANSFER',
+        command.amount.toString(),
+        command.token || 'HBAR',
+        `Transfer to @${receiverUsername}`,
+        status,
+        process.env.HEDERA_NETWORK || 'testnet'
+      );
+    }
+    
     // If we created a new account, add that information to the response
     let response = formatElizaResponseForTwitter(elizaResponse);
     if (!getHederaAccountFromTwitter(receiverUsername) && receiverAccount) {
@@ -91,6 +118,8 @@ export async function handleBalanceCommand(username: string): Promise<string> {
     }
     
     // Get balances through Eliza
+    console.log("hederaAccountId",hederaAccountId)
+    console.log("username............",username)
     const elizaResponse = await sendCommandToEliza(
       "Show me all my token balances",
       username,
@@ -116,7 +145,9 @@ export async function handleHbarBalanceCommand(username: string): Promise<string
     if (!hederaAccountId) {
       return `@${username} You need to register your Hedera account first to check balances. Please use the "register [accountId]" command.`;
     }
-    
+
+    console.log("hederaAccountId",hederaAccountId)
+    console.log("username",username)
     // Get HBAR balance through Eliza
     const elizaResponse = await sendCommandToEliza(
       "What's my HBAR balance?",
@@ -152,6 +183,35 @@ export async function handleCreateTokenCommand(command: ParsedCommand, username:
       username
     );
     
+    // Extract transaction ID and token ID from Eliza response if available
+    let transactionId = null;
+    let tokenId = null;
+    let status = 'SUCCESS';
+    
+    for (const item of elizaResponse) {
+      if (item && item.action === 'HEDERA_TOKEN_CREATED' && item.data) {
+        transactionId = item.data.transactionId;
+        tokenId = item.data.tokenId;
+        status = item.data.status || 'SUCCESS';
+        break;
+      }
+    }
+    
+    // Save transaction to database if we have a transaction ID
+    if (transactionId) {
+      saveTransaction(
+        username,
+        null, // No recipient for token creation
+        transactionId,
+        'CREATE_TOKEN',
+        '0', // No amount for token creation
+        tokenId || 'UNKNOWN_TOKEN',
+        `Created token ${command.tokenName || tokenId}`,
+        status,
+        process.env.HEDERA_NETWORK || 'testnet'
+      );
+    }
+    
     return formatElizaResponseForTwitter(elizaResponse);
   } catch (error) {
     console.error('Error in handleCreateTokenCommand:', error);
@@ -179,6 +239,36 @@ export async function handleAirdropCommand(command: ParsedCommand, username: str
       username,
       username
     );
+    
+    // Extract transaction ID from Eliza response if available
+    let transactionId = null;
+    let status = 'SUCCESS';
+    let tokenId = command.token || 'HBAR';
+    
+    for (const item of elizaResponse) {
+      if (item && (item.action === 'HEDERA_TRANSACTION_EXECUTED' || item.action === 'HEDERA_AIRDROP_EXECUTED') && item.data) {
+        transactionId = item.data.transactionId;
+        status = item.data.status || 'SUCCESS';
+        if (item.data.tokenId) tokenId = item.data.tokenId;
+        break;
+      }
+    }
+    
+    // Save transaction to database if we have a transaction ID
+    if (transactionId) {
+      // For airdrops, we don't have a single recipient
+      saveTransaction(
+        username,
+        null,
+        transactionId,
+        'AIRDROP',
+        command.amount ? command.amount.toString() : '0',
+        tokenId,
+        `Airdrop to ${command.receivers?.length || 0} recipients`,
+        status,
+        process.env.HEDERA_NETWORK || 'testnet'
+      );
+    }
     
     return formatElizaResponseForTwitter(elizaResponse);
   } catch (error) {
@@ -236,6 +326,35 @@ export async function handleMintTokenCommand(command: ParsedCommand, username: s
       username
     );
     
+    // Extract transaction ID from Eliza response if available
+    let transactionId = null;
+    let status = 'SUCCESS';
+    let tokenId = command.token || 'UNKNOWN_TOKEN';
+    
+    for (const item of elizaResponse) {
+      if (item && (item.action === 'HEDERA_TOKEN_MINTED' || item.action === 'HEDERA_TRANSACTION_EXECUTED') && item.data) {
+        transactionId = item.data.transactionId;
+        status = item.data.status || 'SUCCESS';
+        if (item.data.tokenId) tokenId = item.data.tokenId;
+        break;
+      }
+    }
+    
+    // Save transaction to database if we have a transaction ID
+    if (transactionId) {
+      saveTransaction(
+        username,
+        null, // Typically minting is to self
+        transactionId,
+        'MINT_TOKEN',
+        command.amount ? command.amount.toString() : '0',
+        tokenId,
+        `Minted ${command.amount || ''} tokens for ${tokenId}`,
+        status,
+        process.env.HEDERA_NETWORK || 'testnet'
+      );
+    }
+    
     return formatElizaResponseForTwitter(elizaResponse);
   } catch (error) {
     console.error('Error in handleMintTokenCommand:', error);
@@ -263,6 +382,35 @@ export async function handleMintNftCommand(command: ParsedCommand, username: str
       username,
       username
     );
+    
+    // Extract transaction ID from Eliza response if available
+    let transactionId = null;
+    let status = 'SUCCESS';
+    let tokenId = command.token || 'UNKNOWN_NFT';
+    
+    for (const item of elizaResponse) {
+      if (item && (item.action === 'HEDERA_NFT_MINTED' || item.action === 'HEDERA_TRANSACTION_EXECUTED') && item.data) {
+        transactionId = item.data.transactionId;
+        status = item.data.status || 'SUCCESS';
+        if (item.data.tokenId) tokenId = item.data.tokenId;
+        break;
+      }
+    }
+    
+    // Save transaction to database if we have a transaction ID
+    if (transactionId) {
+      saveTransaction(
+        username,
+        null, // Typically minting is to self
+        transactionId,
+        'MINT_NFT',
+        '1', // NFTs are typically 1 unit
+        tokenId,
+        `Minted NFT for collection ${tokenId}`,
+        status,
+        process.env.HEDERA_NETWORK || 'testnet'
+      );
+    }
     
     return formatElizaResponseForTwitter(elizaResponse);
   } catch (error) {

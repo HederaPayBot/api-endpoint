@@ -7,10 +7,10 @@ dotenv.config();
 
 // Eliza configuration
 const ELIZA_API_URL = process.env.ELIZA_API_URL || 'http://localhost:3000';
-const ELIZA_AGENT_NAME = process.env.ELIZA_AGENT_NAME || 'Hedera Helper';
+const ELIZA_AGENT_NAME = process.env.ELIZA_AGENT_NAME || 'HederaBot';
 
 /**
- * @api {get} /api/eliza/status Check Eliza status
+ * @api {get} /api/HederaBot/status Check Eliza status
  * @apiName GetElizaStatus
  * @apiGroup Eliza
  * @apiDescription Check if the Eliza service is available

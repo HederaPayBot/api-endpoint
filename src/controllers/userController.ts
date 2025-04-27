@@ -1,6 +1,12 @@
 import { Request, Response } from 'express';
 import { userService, hederaAccountService } from '../services/sqliteDbService';
 import { encryptSensitiveData } from '../services/credentialService';
+import { 
+  getTransactionHistory, 
+  getTransactionById, 
+  getTokenById,
+  getAllTokens,
+} from '../services/hederaAccountService';
 
 /**
  * Validate Hedera account ID format
@@ -294,6 +300,57 @@ export const updateUserProfile = async (req: Request, res: Response): Promise<Re
 };
 
 /**
+ * @api {post} /api/users/link-hedera-account Link a user to a Hedera account
+ * @apiName LinkUserToHederaAccount
+ * @apiGroup User
+ * @apiDescription Link a user to a Hedera account
+ * 
+ * @apiParam {String} username User's Twitter username
+ * @apiParam {String} hederaAccountId Hedera account ID to link
+ * @apiParam {String} privateKey User's Hedera private key
+ * @apiParam {String} publicKey User's Hedera public key
+ * @apiParam {String} networkType Hedera network type
+ * @apiParam {String} keyType Hedera key type
+ * 
+ * @apiSuccess {Boolean} success Indicates if linking was successful
+ * @apiSuccess {String} message Success message
+ * @apiError {String} error Error message
+ */
+export const linkUserToHederaAccount = async (req: Request, res: Response): Promise<Response> => {
+  try {
+    const { username, hederaAccountId,privateKey,publicKey,networkType,keyType } = req.body;
+    if(!username || !hederaAccountId || !privateKey || !publicKey || !networkType || !keyType){
+      return res.status(400).json({
+        success: false,
+        error: 'Username, Hedera account ID, private key, public key, network type, and key type are required'
+      });
+    }
+
+    const user = userService.getUserByTwitterUsername(username);
+    if(!user){
+      return res.status(404).json({
+        success: false,
+        error: `User @${username} not found`
+      });
+    }
+
+
+    hederaAccountService.linkHederaAccount(user.id, hederaAccountId, false,privateKey,publicKey,networkType,keyType);
+
+    return res.status(200).json({
+      success: true,
+      message: `Hedera account ${hederaAccountId} linked to @${username}`
+    });
+  } catch (error) {
+    console.error('Error linking user to Hedera account:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Internal server error while linking user to Hedera account ' + error.message
+    });
+  }
+  
+}
+/**
  * @api {get} /api/users/link-status/:username Check account linking status
  * @apiName GetLinkStatus
  * @apiGroup User
@@ -340,6 +397,249 @@ export const getLinkStatus = async (req: Request, res: Response): Promise<Respon
       success: false,
       error: 'Internal server error while checking link status'
     });
+  }
+};
+
+/**
+ * @api {get} /api/users/transactions/:username Get user transaction history
+ * @apiName GetUserTransactionHistory
+ * @apiGroup User
+ * @apiDescription Get a user's transaction history from both local database and Hedera network via Eliza
+ * 
+ * @apiParam {String} username User's Twitter username
+ * 
+ * @apiSuccess {Object[]} transactions List of transactions
+ * @apiError {String} error Error message
+ */
+export const getUserTransactionHistory = async (req: Request, res: Response): Promise<Response> => {
+  try {
+    const { username } = req.params;
+    
+    if (!username) {
+      return res.status(400).json({
+        success: false,
+        error: 'Username parameter is required'
+      });
+    }
+    
+    // Get user from database
+    const user = userService.getUserByTwitterUsername(username);
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: `User @${username} not found`
+      });
+    }
+
+    // Get user's Hedera account ID
+    const accountId = user.hedera_account_id;
+    if (!accountId) {
+      return res.status(404).json({
+        success: false,
+        error: `User @${username} does not have a linked Hedera account`
+      });
+    }
+
+    // Get transactions using Eliza integration
+    const transactions = await getTransactionHistory(user.id);
+    console.log("transactions",transactions)
+    return res.status(200).json({
+      success: true,
+      transactions: transactions.map(tx => ({
+        id: tx.id,
+        transactionId: tx.hedera_transaction_id,
+        type: tx.transaction_type,
+        amount: tx.amount,
+        tokenId: tx.token_id,
+        timestamp: tx.timestamp,
+        senderUsername: tx.sender_username,
+        recipientUsername: tx.recipient_username,
+        status: tx.status,
+        source: tx.source || 'local_db',
+        memo: tx.memo
+      }))
+    });
+  } catch (error) {
+    console.error('Error getting transaction history:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Internal server error while retrieving transaction history'
+    });
+  }
+};
+
+/**
+ * @api {get} /api/users/transaction/:transactionId Get transaction details
+ * @apiName GetTransactionDetails
+ * @apiGroup User
+ * @apiDescription Get details of a specific transaction from local database or Hedera network via Eliza
+ * 
+ * @apiParam {String} transactionId Hedera transaction ID
+ * 
+ * @apiSuccess {Object} transaction Transaction details
+ * @apiError {String} error Error message
+ */
+export const getTransactionDetails = async (req: Request, res: Response): Promise<Response> => {
+  try {
+    const { transactionId,username } = req.params;
+    
+    if (!transactionId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Transaction ID parameter is required'
+      });
+    }
+
+    if(!username){
+      return res.status(400).json({
+        success: false,
+        error: 'Username parameter is required'
+      });
+    }
+    // Get transaction from database or Eliza
+    const transaction = await getTransactionById(transactionId,username);
+    
+    if (!transaction) {
+      return res.status(404).json({
+        success: false,
+        error: `Transaction with ID ${transactionId} not found`
+      });
+    }
+    
+    // Format response with hashscan URL
+    const networkType = transaction.network_type || 'testnet';
+    const hashscanUrl = `https://hashscan.io/${networkType === 'mainnet' ? 'mainnet' : 'testnet'}/tx/${transaction.hedera_transaction_id}`;
+    
+    return res.status(200).json({
+      success: true,
+      transaction: {
+        id: transaction.id,
+        transactionId: transaction.hedera_transaction_id,
+        type: transaction.transaction_type,
+        amount: transaction.amount,
+        tokenId: transaction.token_id,
+        timestamp: transaction.timestamp,
+        senderUsername: transaction.sender_username,
+        recipientUsername: transaction.recipient_username,
+        status: transaction.status,
+        memo: transaction.memo,
+        networkType: transaction.network_type,
+        source: transaction.source || 'local_db',
+        hashscanUrl
+      }
+    });
+  } catch (error) {
+    console.error('Error getting transaction details:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Internal server error while retrieving transaction details'
+    });
+  }
+};
+
+
+/**
+ * @api {get} /api/user/all-tokens Get all tokens
+ * @apiName GetAllTokens
+ * @apiGroup Tokens
+ * @apiDescription Get a list of all tokens
+ * 
+ * @apiQuery {String} [network=testnet] Network to fetch tokens from (testnet or mainnet)
+ * @apiQuery {Number} [limit=100] Number of tokens to return (max 1000)
+ * @apiQuery {String} [startingToken] Token ID to start from for pagination
+ * 
+ * @apiSuccess {Object[]} tokens List of tokens
+ * @apiSuccess {String} tokens.tokenId Token ID
+ * @apiSuccess {String} tokens.name Token name
+ * @apiSuccess {String} tokens.symbol Token symbol
+ * @apiSuccess {Number} tokens.decimals Token decimals
+ * @apiSuccess {String} tokens.totalSupply Total supply of the token
+ */
+export const getAllUserTokens = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { username } = req.params;
+    const network = req.query.network as string || 'testnet';
+    const limit = parseInt(req.query.limit as string) || 100;
+    const startingToken = req.query.startingToken as string;
+
+    if(!username){
+      res.status(400).json({ error: 'Username is required' });
+      return;
+    }
+
+    // Validate network parameter
+    if (network !== 'testnet' && network !== 'mainnet') {
+      res.status(400).json({ error: 'Invalid network parameter. Must be "testnet" or "mainnet"' });
+      return;
+    }
+
+    // Validate limit parameter
+    if (isNaN(limit) || limit < 1 || limit > 1000) {
+      res.status(400).json({ error: 'Invalid limit parameter. Must be a number between 1 and 1000' });
+      return;
+    }
+
+    const tokens = await getAllTokens(username,network,limit,startingToken);
+
+    res.status(200).json(tokens);
+  } catch (error) {
+    console.error('Error fetching all tokens:', error);
+    res.status(500).json({ error: 'Failed to fetch tokens' });
+  }
+};
+
+/**
+ * @api {get} /api/user/token/:tokenId Get token by ID
+ * @apiName GetTokenById
+ * @apiGroup Tokens
+ * @apiDescription Get detailed information about a specific token by its ID
+ * 
+ * @apiParam {String} tokenId Token ID to fetch
+ * @apiQuery {String} [network=testnet] Network to fetch token from (testnet or mainnet)
+ * 
+ * @apiSuccess {String} tokenId Token ID
+ * @apiSuccess {String} name Token name
+ * @apiSuccess {String} symbol Token symbol
+ * @apiSuccess {Number} decimals Token decimals
+ * @apiSuccess {String} totalSupply Total supply of the token
+ * @apiSuccess {Object} treasury Treasury account information
+ * @apiSuccess {String[]} [customFees] Custom fees associated with the token
+ */
+export const getUserTokenById = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { tokenId, username } = req.params;
+    const network = req.query.network as string || 'testnet';
+
+    // Validate tokenId parameter
+    if (!tokenId) {
+      res.status(400).json({ error: 'Token ID is required' });
+      return;
+    }
+
+    if(!username){
+      res.status(400).json({ error: 'Username is required' });
+      return;
+    }
+
+    // Validate network parameter
+    if (network !== 'testnet' && network !== 'mainnet') {
+      res.status(400).json({ error: 'Invalid network parameter. Must be "testnet" or "mainnet"' });
+      return;
+    }
+
+    
+    const token = await getTokenById(username,tokenId, network);
+
+    if (!token) {
+      res.status(404).json({ error: 'Token not found' });
+      return;
+    }
+
+    res.status(200).json(token);
+  } catch (error) {
+    console.error(`Error fetching token ${req.params.tokenId}:`, error);
+    res.status(500).json({ error: 'Failed to fetch token details' });
   }
 };
 
