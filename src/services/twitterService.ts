@@ -57,6 +57,8 @@ export function parseTwitterMention(mentionText: string): ParsedCommand {
   
   // Common patterns for commands
   const sendPattern = /(?:SEND|TRANSFER)\s+(\d+(?:\.\d+)?)\s+([A-Z]+)\s+(?:TO\s+)?(@[a-zA-Z0-9_]+)/i;
+  // New pattern to handle "SEND @user [amount] [token]" format
+  const sendReversePattern = /(?:SEND|TRANSFER)\s+(@[a-zA-Z0-9_]+)\s+(\d+(?:\.\d+)?)\s+([A-Z]+)/i;
   const airdropPattern = /AIRDROP\s+(\d+(?:\.\d+)?)\s+([A-Z]+)\s+(?:TO\s+)?(@[a-zA-Z0-9_]+(?:\s+@[a-zA-Z0-9_]+)*)/i;
   
   // More flexible balance patterns
@@ -70,10 +72,17 @@ export function parseTwitterMention(mentionText: string): ParsedCommand {
   const rejectTokenPattern = /REJECT\s+TOKEN\s+([0-9.]+)/i;
   const associateTokenPattern = /(?:ASSOCIATE|CONNECT|LINK)\s+(?:MY\s+)?(?:WALLET|ACCOUNT)\s+(?:WITH|TO)\s+TOKEN\s+([0-9.]+)/i;
   const dissociateTokenPattern = /(?:DISSOCIATE|DISCONNECT|UNLINK)\s+(?:MY\s+)?(?:WALLET|ACCOUNT)\s+(?:WITH|FROM)\s+TOKEN\s+([0-9.]+)/i;
-  const transferHbarPattern = /(?:TRANSFER|SEND|MAKE\s+A\s+TRANSACTION\s+OF)\s+(\d+(?:\.\d+)?)\s+HBAR\s+TO\s+(?:ACCOUNT\s+)?([0-9.]+)/i;
-  const transferHtsPattern = /(?:TRANSFER|SEND|MAKE\s+A\s+TRANSACTION\s+OF)\s+(\d+(?:\.\d+)?)\s+(?:OF|TOKENS|TOKEN)?\s+([0-9.]+)\s+TO\s+(?:ACCOUNT\s+)?([0-9.]+)/i;
+  const transferHbarPattern = /(?:TRANSFER|SEND|MAKE\s+A\s+TRANSACTION\s+OF)\s+(\d+(?:\.\d+)?)\s+HBAR\s+TO\s+(?:ACCOUNT\s+|@)?([0-9.]+|[a-zA-Z0-9_]+)/i;
+  const transferHtsPattern = /(?:TRANSFER|SEND|MAKE\s+A\s+TRANSACTION\s+OF)\s+(\d+(?:\.\d+)?)\s+(?:OF|TOKENS|TOKEN)?\s+([0-9.]+)\s+TO\s+(?:ACCOUNT\s+|@)?([0-9.]+|[a-zA-Z0-9_]+)/i;
   const claimAirdropPattern = /(?:CLAIM|ACCEPT)\s+AIRDROP\s+(?:OF\s+)?(?:TOKEN\s+)?([0-9.]+)\s+FROM\s+(?:ACCOUNT\s+)?([0-9.]+)/i;
   const pendingAirdropPattern = /SHOW\s+PENDING\s+AIRDROPS(?:\s+FOR\s+(?:THE\s+)?(?:ACCOUNT\s+)?(?:WITH\s+ID\s+)?([0-9.]+))?/i;
+  
+  // Now also add reverse versions of the transferHbar and transferHts patterns
+  const transferHbarReversePattern = /(?:TRANSFER|SEND|MAKE\s+A\s+TRANSACTION\s+OF)\s+(?:TO\s+)?(?:ACCOUNT\s+|@)?([0-9.]+|[a-zA-Z0-9_]+)\s+(\d+(?:\.\d+)?)\s+HBAR/i;
+  const transferHtsReversePattern = /(?:TRANSFER|SEND|MAKE\s+A\s+TRANSACTION\s+OF)\s+(?:TO\s+)?(?:ACCOUNT\s+|@)?([0-9.]+|[a-zA-Z0-9_]+)\s+(\d+(?:\.\d+)?)\s+(?:OF|TOKENS|TOKEN)?\s+([0-9.]+)/i;
+  
+  // More flexible general send pattern to catch various user inputs
+  const flexibleSendPattern = /(?:SEND|TRANSFER)\s+(?:TO\s+)?(@[a-zA-Z0-9_]+)\s+(\d+(?:\.\d+)?)\s+([A-Z]+)/i;
   
   // Topic operations patterns
   const getTopicInfoPattern = /(?:SHOW|GET|FETCH|GIVE\s+ME)\s+(?:INFO|DETAILS|INFORMATION)\s+(?:ABOUT|ON|FOR)\s+TOPIC\s+([0-9.]+)/i;
@@ -100,13 +109,37 @@ export function parseTwitterMention(mentionText: string): ParsedCommand {
     const matches = textWithoutMention.match(sendPattern);
     if (matches) {
       const receiverUsername = matches[3].substring(1); // Remove @ from username
+      const token = matches[2];
+      
+      // If token is HBAR, handle specially by updating command
+      const commandType = token === 'HBAR' ? 'TRANSFER_HBAR' : 'SEND';
       
       return {
-        command: 'SEND',
+        command: commandType,
         amount: matches[1],
         token: matches[2],
-        receivers: [receiverUsername], 
+        receivers: [receiverUsername],
+        receiver: receiverUsername, // Add receiver field for TRANSFER_HBAR compatibility
         elizaCommand: `Transfer ${matches[1]} ${matches[2]} to account ${receiverUsername}`,
+        originalText: mentionText
+      };
+    }
+  } else if (sendReversePattern.test(textWithoutMention)) {
+    const matches = textWithoutMention.match(sendReversePattern);
+    if (matches) {
+      const receiverUsername = matches[1].substring(1); // Remove @ from username
+      const token = matches[3];
+      
+      // If token is HBAR, handle specially by updating command
+      const commandType = token === 'HBAR' ? 'TRANSFER_HBAR' : 'SEND';
+      
+      return {
+        command: commandType,
+        amount: matches[2],
+        token: matches[3],
+        receivers: [receiverUsername],
+        receiver: receiverUsername, // Add receiver field for TRANSFER_HBAR compatibility
+        elizaCommand: `Transfer ${matches[2]} ${matches[3]} to account ${receiverUsername}`,
         originalText: mentionText
       };
     }
@@ -317,11 +350,39 @@ export function parseTwitterMention(mentionText: string): ParsedCommand {
       const amount = matches[1];
       const receiverAccount = matches[2];
       
+      // Check if the receiver has an @ symbol (indicating Twitter username)
+      // or if it doesn't contain a dot (likely a Twitter username without @)
+      let receiverValue = receiverAccount;
+      if (receiverAccount.startsWith('@')) {
+        receiverValue = receiverAccount.substring(1); // Remove @ symbol
+      }
+      
       return {
         command: 'TRANSFER_HBAR',
         amount,
-        receiver: receiverAccount,
-        elizaCommand: `Transfer ${amount} HBAR to account ${receiverAccount}`,
+        receiver: receiverValue,
+        elizaCommand: `Transfer ${amount} HBAR to account ${receiverValue}`,
+        originalText: mentionText
+      };
+    }
+  } else if (transferHbarReversePattern.test(textWithoutMention)) {
+    const matches = textWithoutMention.match(transferHbarReversePattern);
+    if (matches) {
+      const receiverAccount = matches[1];
+      const amount = matches[2];
+      
+      // Check if the receiver has an @ symbol (indicating Twitter username)
+      // or if it doesn't contain a dot (likely a Twitter username without @)
+      let receiverValue = receiverAccount;
+      if (receiverAccount.startsWith('@')) {
+        receiverValue = receiverAccount.substring(1); // Remove @ symbol
+      }
+      
+      return {
+        command: 'TRANSFER_HBAR',
+        amount,
+        receiver: receiverValue,
+        elizaCommand: `Transfer ${amount} HBAR to account ${receiverValue}`,
         originalText: mentionText
       };
     }
@@ -332,12 +393,42 @@ export function parseTwitterMention(mentionText: string): ParsedCommand {
       const tokenId = matches[2];
       const receiverAccount = matches[3];
       
+      // Check if the receiver has an @ symbol (indicating Twitter username)
+      // or if it doesn't contain a dot (likely a Twitter username without @)
+      let receiverValue = receiverAccount;
+      if (receiverAccount.startsWith('@')) {
+        receiverValue = receiverAccount.substring(1); // Remove @ symbol
+      }
+      
       return {
         command: 'TRANSFER_HTS',
         amount,
         token: tokenId,
-        receiver: receiverAccount,
-        elizaCommand: `Transfer ${amount} of ${tokenId} to account ${receiverAccount}`,
+        receiver: receiverValue,
+        elizaCommand: `Transfer ${amount} of ${tokenId} to account ${receiverValue}`,
+        originalText: mentionText
+      };
+    }
+  } else if (transferHtsReversePattern.test(textWithoutMention)) {
+    const matches = textWithoutMention.match(transferHtsReversePattern);
+    if (matches) {
+      const receiverAccount = matches[1];
+      const amount = matches[2];
+      const tokenId = matches[3];
+      
+      // Check if the receiver has an @ symbol (indicating Twitter username)
+      // or if it doesn't contain a dot (likely a Twitter username without @)
+      let receiverValue = receiverAccount;
+      if (receiverAccount.startsWith('@')) {
+        receiverValue = receiverAccount.substring(1); // Remove @ symbol
+      }
+      
+      return {
+        command: 'TRANSFER_HTS',
+        amount,
+        token: tokenId,
+        receiver: receiverValue,
+        elizaCommand: `Transfer ${amount} of ${tokenId} to account ${receiverValue}`,
         originalText: mentionText
       };
     }
@@ -446,6 +537,60 @@ export function parseTwitterMention(mentionText: string): ParsedCommand {
     }
   }
   
+  // Add a final catch-all pattern for send commands that might have been missed by other patterns
+  else if (flexibleSendPattern.test(textWithoutMention)) {
+    const matches = textWithoutMention.match(flexibleSendPattern);
+    if (matches) {
+      const receiverUsername = matches[1].substring(1); // Remove @ from username
+      const amount = matches[2];
+      const token = matches[3];
+      
+      // If token is HBAR, handle specially by updating command
+      const commandType = token === 'HBAR' ? 'TRANSFER_HBAR' : 'SEND';
+      
+      console.log(`Caught flexible send pattern: @${receiverUsername} ${amount} ${token}`);
+      
+      return {
+        command: commandType,
+        amount: amount,
+        token: token,
+        receivers: [receiverUsername],
+        receiver: receiverUsername,
+        elizaCommand: `Transfer ${amount} ${token} to account ${receiverUsername}`,
+        originalText: mentionText
+      };
+    }
+  }
+  
+  // More aggressive catch-all for send/transfer commands
+  // This will try to extract Twitter username, amount, and token from almost any format
+  const twitterHandleMatch = textWithoutMention.match(/@([a-zA-Z0-9_]+)/);
+  const amountMatch = textWithoutMention.match(/(\d+(?:\.\d+)?)/);
+  const tokenMatch = textWithoutMention.match(/\b(HBAR|[A-Z]{3,})\b/);
+
+  if (twitterHandleMatch && amountMatch && tokenMatch && 
+      /\b(?:send|transfer)\b/i.test(textWithoutMention)) {
+    
+    const receiverUsername = twitterHandleMatch[1];
+    const amount = amountMatch[1];
+    const token = tokenMatch[1];
+    
+    // If token is HBAR, handle specially by updating command
+    const commandType = token === 'HBAR' ? 'TRANSFER_HBAR' : 'SEND';
+    
+    console.log(`Caught super flexible send pattern: @${receiverUsername} ${amount} ${token}`);
+    
+    return {
+      command: commandType,
+      amount: amount,
+      token: token,
+      receivers: [receiverUsername],
+      receiver: receiverUsername,
+      elizaCommand: `Transfer ${amount} ${token} to account ${receiverUsername}`,
+      originalText: mentionText
+    };
+  }
+  
   // If no pattern matched, return default
   return defaultReturn;
 }
@@ -489,7 +634,7 @@ export async function getRecentMentions(): Promise<any[]> {
     // Using agent-twitter-client to get tweets and replies
     const botUsername = process.env.TWITTER_BOT_USERNAME || 'HederaPayBot';
     
-    console.log(`Fetching recent tweets mentioning @${botUsername} (last 5 minutes only)`);
+    console.log(`Fetching recent tweets mentioning @${botUsername}`);
     
     // Using search method to find mentions
     // Collect all tweets from the AsyncGenerator into an array
@@ -497,19 +642,56 @@ export async function getRecentMentions(): Promise<any[]> {
     const mentionsGenerator = twitterClient.searchTweets(`@${botUsername}`, 20);
     
     for await (const tweet of mentionsGenerator) {
-      // Get the created_at date - use any type to avoid linter errors
+      // Get the created_at date with more robust extraction
       const tweetAny = tweet as any;
-      const createdAt = tweetAny.created_at || tweetAny.createdAt || new Date().toISOString();
-      const tweetDate = new Date(createdAt);
       
-      // Add tweet info to log
+      // Try different paths to find the timestamp in the tweet object
+      let createdAtStr: string | null = null;
+      
+      // Check for string formatted date (ISO format)
+      if (typeof tweetAny.created_at === 'string') {
+        createdAtStr = tweetAny.created_at;
+      } else if (typeof tweetAny.createdAt === 'string') {
+        createdAtStr = tweetAny.createdAt;
+      } 
+      // Check for REST response format
+      else if (tweetAny.rest && tweetAny.rest.created_at) {
+        createdAtStr = tweetAny.rest.created_at;
+      }
+      // Check for timestamp in milliseconds/seconds
+      else if (typeof tweetAny.timestamp === 'number') {
+        // Convert timestamp to ISO string (handle both seconds and milliseconds formats)
+        const timestamp = tweetAny.timestamp > 10000000000 
+          ? tweetAny.timestamp // already in milliseconds
+          : tweetAny.timestamp * 1000; // convert from seconds to milliseconds
+        
+        createdAtStr = new Date(timestamp).toISOString();
+      }
+      
+      // If we still don't have a date, log the issue and use current time
+      if (!createdAtStr) {
+        console.warn(`Could not find created_at timestamp in tweet object. Using current time.`);
+        console.warn(`Tweet object keys: ${Object.keys(tweetAny).join(', ')}`);
+        if (tweetAny.rest) {
+          console.warn(`Tweet.rest keys: ${Object.keys(tweetAny.rest).join(', ')}`);
+        }
+        createdAtStr = new Date().toISOString();
+      }
+      
+      const tweetDate = new Date(createdAtStr);
+      
+      // Add tweet info to log with more detailed timestamp
       const id = tweetAny.id_str || tweetAny.id || 
                 (tweetAny.rest ? tweetAny.rest.id_str : null) || 
                 'unknown';
-      console.log(`Found tweet ${id} from ${tweetDate.toISOString()}`);
+                
+      console.log(`Found tweet ${id} from ${tweetDate.toISOString()} (${new Date().getTime() - tweetDate.getTime()}ms ago)`);
+      
+      // Store the parsed date directly in the tweet object for easier filtering later
+      tweetAny._parsedCreatedAt = tweetDate;
       
       searchResults.push(tweet);
-      if (searchResults.length >= 20) break; // Limit to 20 tweets
+      if (searchResults.length >= 30) break; // Limit to 30 tweets
     }
     
     return searchResults;
@@ -674,6 +856,11 @@ export async function forceReprocessTweet(tweetId: string): Promise<boolean> {
  * @param skipped - Optional flag to indicate if tweet was skipped due to command filtering
  */
 export async function markAsProcessed(tweetId: string, skipped: boolean = false): Promise<void> {
+  if (!tweetId) {
+    console.warn('Attempted to mark undefined or null tweet ID as processed');
+    return;
+  }
+  
   // Store the current timestamp with the tweet ID
   const now = Date.now();
   processedTweets.set(tweetId, now);
@@ -724,16 +911,57 @@ export async function filterRecentMentions(mentions: any[]): Promise<any[]> {
   console.log(`Filtering tweets: only processing tweets newer than ${fiveMinutesAgo.toISOString()}`);
   
   const filteredMentions = mentions.filter(mention => {
-    // Get the created_at date, handling different API formats
-    const createdAt = mention.created_at || mention.createdAt || new Date().toISOString();
-    const mentionDate = new Date(createdAt);
+    const tweetAny = mention as any;
     
+    // First check if we already parsed the date in getRecentMentions
+    if (tweetAny._parsedCreatedAt instanceof Date) {
+      const mentionDate = tweetAny._parsedCreatedAt;
+      
+      const isRecent = mentionDate >= fiveMinutesAgo;
+      const ageInMinutes = (new Date().getTime() - mentionDate.getTime()) / (1000 * 60);
+      
+      if (!isRecent) {
+        console.log(`Skipping old tweet from ${mentionDate.toISOString()} - ${ageInMinutes.toFixed(1)} minutes old (older than 5 minutes cutoff)`);
+      } else {
+        console.log(`Including recent tweet from ${mentionDate.toISOString()} - ${ageInMinutes.toFixed(1)} minutes old`);
+      }
+      
+      return isRecent;
+    }
+    
+    // Fallback to original behavior if we don't have the parsed date
+    // Get the created_at date, handling different API formats
+    let createdAtStr = tweetAny.created_at || tweetAny.createdAt;
+    
+    // Check for REST response format
+    if (!createdAtStr && tweetAny.rest && tweetAny.rest.created_at) {
+      createdAtStr = tweetAny.rest.created_at;
+    }
+    
+    // Check for timestamp in milliseconds/seconds
+    if (!createdAtStr && typeof tweetAny.timestamp === 'number') {
+      // Convert timestamp to ISO string (handle both seconds and milliseconds formats)
+      const timestamp = tweetAny.timestamp > 10000000000 
+        ? tweetAny.timestamp // already in milliseconds
+        : tweetAny.timestamp * 1000; // convert from seconds to milliseconds
+      
+      createdAtStr = new Date(timestamp).toISOString();
+    }
+    
+    // If we still don't have a date, use current time but log a warning
+    if (!createdAtStr) {
+      console.warn(`Could not find created_at timestamp in tweet during filtering. Using current time.`);
+      createdAtStr = new Date().toISOString();
+    }
+    
+    const mentionDate = new Date(createdAtStr);
     const isRecent = mentionDate >= fiveMinutesAgo;
+    const ageInMinutes = (new Date().getTime() - mentionDate.getTime()) / (1000 * 60);
     
     if (!isRecent) {
-      console.log(`Skipping old tweet from ${mentionDate.toISOString()} - older than 5 minutes cutoff`);
+      console.log(`Skipping old tweet from ${mentionDate.toISOString()} - ${ageInMinutes.toFixed(1)} minutes old (older than 5 minutes cutoff)`);
     } else {
-      console.log(`Including recent tweet from ${mentionDate.toISOString()}`);
+      console.log(`Including recent tweet from ${mentionDate.toISOString()} - ${ageInMinutes.toFixed(1)} minutes old`);
     }
     
     // Only include mentions from the last 5 minutes

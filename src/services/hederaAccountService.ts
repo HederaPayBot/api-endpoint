@@ -191,34 +191,27 @@ export async function getTransactionHistory(userId: number) {
     const twitterUsername = user.twitter_username;
     const accountId = user.hedera_account_id;
     
-    // Initialize Hedera client and account
-    const { Client, AccountId, PrivateKey } = require("@hashgraph/sdk");
-    const privateKey = process.env.HEDERA_PRIVATE_KEY;
+    // Initialize Hedera client with operator account (not the user's account)
+    const { Client, AccountId, PrivateKey, AccountInfoQuery, AccountBalanceQuery } = require("@hashgraph/sdk");
     
-    if (!privateKey) {
-      throw new Error('No private key found in environment variables');
-    }
-    
-    // Create client based on network type
+    // Create client based on network type and use the operator account
     const client = networkType === 'mainnet' 
       ? Client.forMainnet() 
       : Client.forTestnet();
     
-    // Set operator
-    client.setOperator(
-      AccountId.fromString(accountId),
-      PrivateKey.fromStringED25519(privateKey)
-    );
+    // Set operator using the operator credentials (not the user's account)
+    const operatorAccount = AccountId.fromString(operatorId);
+    const operatorPrivateKey = PrivateKey.fromStringED25519(operatorKey);
+    client.setOperator(operatorAccount, operatorPrivateKey);
     
     try {
-      // Query transaction history - since direct transaction history is complex,
-      // use account info to get token relationships and balance information
-      const { AccountInfoQuery } = require("@hashgraph/sdk");
-      const accountInfo = await new AccountInfoQuery()
-        .setAccountId(accountId)
-        .execute(client);
+      // Query balance first (simpler and more reliable)
+      const balanceQuery = new AccountBalanceQuery()
+        .setAccountId(accountId);
       
-      // Transform account info to transactions format
+      const balance = await balanceQuery.execute(client);
+      
+      // Transform balance info to transactions format
       const transactions = [];
       
       // Add HBAR balance as a pseudo-transaction
@@ -226,7 +219,7 @@ export async function getTransactionHistory(userId: number) {
         id: null,
         hedera_transaction_id: `account-${accountId}-balance`,
         transaction_type: 'BALANCE',
-        amount: accountInfo.balance.toString(),
+        amount: balance.hbars.toString(),
         token_id: 'HBAR',
         timestamp: new Date().toISOString(),
         sender_username: 'System',
@@ -237,27 +230,23 @@ export async function getTransactionHistory(userId: number) {
         source: 'hedera_sdk'
       });
       
-      // Add token relationships as pseudo-transactions
-      if (accountInfo.tokenRelationships && accountInfo.tokenRelationships._map) {
-        const tokenMap = accountInfo.tokenRelationships._map as Map<string, any[]>;
-        for (const [tokenId, relationship] of tokenMap.entries()) {
-          if (relationship && relationship.length > 0) {
-            const tokenRel = relationship[0];
-            transactions.push({
-              id: null,
-              hedera_transaction_id: `token-${tokenId}-balance`,
-              transaction_type: 'TOKEN_BALANCE',
-              amount: tokenRel.balance ? tokenRel.balance.toString() : '0',
-              token_id: tokenId,
-              timestamp: new Date().toISOString(),
-              sender_username: 'System',
-              recipient_username: twitterUsername,
-              status: 'SUCCESS',
-              memo: `Current ${tokenId} token balance`,
-              network_type: networkType,
-              source: 'hedera_sdk'
-            });
-          }
+      // Add token balances as pseudo-transactions
+      if (balance.tokens && balance.tokens.size > 0) {
+        for (const [tokenId, amount] of balance.tokens.entries()) {
+          transactions.push({
+            id: null,
+            hedera_transaction_id: `token-${tokenId}-balance`,
+            transaction_type: 'TOKEN_BALANCE',
+            amount: amount.toString(),
+            token_id: tokenId,
+            timestamp: new Date().toISOString(),
+            sender_username: 'System',
+            recipient_username: twitterUsername,
+            status: 'SUCCESS',
+            memo: `Current ${tokenId} token balance`,
+            network_type: networkType,
+            source: 'hedera_sdk'
+          });
         }
       }
       
@@ -294,24 +283,18 @@ export async function getTransactionById(transactionId: string, userName?: strin
     
     const accountId = user.hedera_account_id;
     
-    // Initialize Hedera client
-    const { Client, AccountId, PrivateKey } = require("@hashgraph/sdk");
-    const privateKey = process.env.HEDERA_PRIVATE_KEY;
-    
-    if (!privateKey) {
-      throw new Error('No private key found in environment variables');
-    }
+    // Initialize Hedera client using the operator account
+    const { Client, AccountId, PrivateKey, AccountBalanceQuery } = require("@hashgraph/sdk");
     
     // Create client based on network type
     const client = networkType === 'mainnet' 
       ? Client.forMainnet() 
       : Client.forTestnet();
     
-    // Set operator
-    client.setOperator(
-      AccountId.fromString(accountId),
-      PrivateKey.fromStringED25519(privateKey)
-    );
+    // Set operator using the operator credentials
+    const operatorAccount = AccountId.fromString(operatorId);
+    const operatorPrivateKey = PrivateKey.fromStringED25519(operatorKey);
+    client.setOperator(operatorAccount, operatorPrivateKey);
     
     try {
       // For token-balance style transactions
@@ -319,7 +302,6 @@ export async function getTransactionById(transactionId: string, userName?: strin
         const tokenId = transactionId.split('-')[1];
         
         // Get token balance
-        const { AccountBalanceQuery } = require("@hashgraph/sdk");
         const balance = await new AccountBalanceQuery()
           .setAccountId(accountId)
           .execute(client);
@@ -389,184 +371,196 @@ export async function getTransactionById(transactionId: string, userName?: strin
 }
 
 /**
- * Get all tokens from the network using Hedera SDK
- * 
- * @param username - Twitter username
- * @param networkType - 'mainnet' or 'testnet'
- * @param limit - Maximum number of tokens to return
- * @param startingToken - Token ID to start from (for pagination)
- * @returns Promise<Array> - List of tokens
+ * Get all tokens for a user
+ * @param username Twitter username
+ * @param network Network type (testnet or mainnet)
+ * @param limit Maximum number of tokens to return
+ * @param startingToken Token ID to start pagination
+ * @returns Array of token information
  */
-export async function getAllTokens(username: string, networkType: string = 'testnet', limit: number = 100, startingToken?: string): Promise<any[]> {
+export async function getAllTokens(
+  username: string, 
+  network: string = 'testnet', 
+  limit: number = 100,
+  startingToken?: string
+): Promise<any> {
   try {
-    // For backwards compatibility
-    const network = networkType.toLowerCase() === 'mainnet' ? 'mainnet' : 'testnet';
+    // Generate a unique user ID for this request
+    const userId = `user_${Date.now()}`;
     
-    // Get user information to retrieve account details
-    const user = sqliteDbService.userService.getUserByTwitterUsername(username);
-    if (!user || !user.hedera_account_id) {
-      throw new Error('User not found or has no Hedera account');
+    // Query Eliza for token balances - use the same consistent command format
+    const response = await sendCommandToEliza('get token balances', userId, username);
+    
+    // Check if we have a valid response with token balances
+    const balanceResponse = response.find(item => item.content && item.content.amount);
+    
+    if (!balanceResponse || !balanceResponse.content || !balanceResponse.content.amount) {
+      return { 
+        success: false, 
+        error: 'Failed to retrieve token balances',
+        tokens: []
+      };
     }
     
-    const accountId = user.hedera_account_id;
+    // Extract tokens from the response
+    const tokens = balanceResponse.content.amount.map(token => ({
+      tokenId: token.tokenId,
+      name: token.tokenName,
+      symbol: token.tokenSymbol,
+      decimals: parseInt(token.tokenDecimals),
+      balance: token.balanceInDisplayUnit,
+      rawBalance: token.balance
+    }));
     
-    // Initialize Hedera client
-    const { Client, AccountId, PrivateKey, AccountInfoQuery } = require("@hashgraph/sdk");
-    const privateKey = process.env.HEDERA_PRIVATE_KEY;
-    
-    if (!privateKey) {
-      throw new Error('No private key found in environment variables');
-    }
-    
-    // Create client based on network type
-    const client = network === 'mainnet' 
-      ? Client.forMainnet() 
-      : Client.forTestnet();
-    
-    // Set operator
-    client.setOperator(
-      AccountId.fromString(accountId),
-      PrivateKey.fromStringED25519(privateKey)
-    );
-    
-    try {
-      // Get account info to retrieve token relationships
-      const accountInfo = await new AccountInfoQuery()
-        .setAccountId(accountId)
-        .execute(client);
-      
-      const tokens = [];
-      
-      // Process token relationships
-      if (accountInfo.tokenRelationships && accountInfo.tokenRelationships._map) {
-        // Safely cast the map
-        const tokenRelMap = accountInfo.tokenRelationships._map as Map<string, any[]>;
-        
-        // Sort by token ID if startingToken is provided
-        const tokenEntries = Array.from(tokenRelMap.entries());
-        
-        if (startingToken) {
-          const startingIndex = tokenEntries.findIndex(([id]) => id === startingToken);
-          if (startingIndex >= 0) {
-            tokenEntries.splice(0, startingIndex);
-          }
-        }
-        
-        // Take only up to the limit
-        const limitedEntries = tokenEntries.slice(0, limit);
-        
-        for (const [tokenId, relationship] of limitedEntries) {
-          if (relationship && relationship.length > 0) {
-            const tokenRel = relationship[0];
-            
-            // Get token info directly via TokenInfoQuery if needed
-            // For now, we'll use what's available in the relationship
-            tokens.push({
-              token_id: tokenId,
-              name: tokenRel.tokenId ? tokenRel.tokenId.toString() : 'Unknown',
-              symbol: 'UNKNOWN', // Not available in relationship
-              type: 'FUNGIBLE_COMMON',
-              supply: tokenRel.balance ? tokenRel.balance.toString() : '0',
-              max_supply: '0', // Not available in relationship
-              decimals: 0, // Not available in relationship
-              treasury_account_id: null,
-              network: network
-            });
-          }
-        }
-      }
-      
-      return tokens;
-    } finally {
-      if (client) {
-        client.close();
+    // Apply pagination if needed
+    let filteredTokens = tokens;
+    if (startingToken) {
+      const startIndex = tokens.findIndex(t => t.tokenId === startingToken);
+      if (startIndex !== -1) {
+        filteredTokens = tokens.slice(startIndex + 1);
       }
     }
+    
+    // Apply limit
+    filteredTokens = filteredTokens.slice(0, limit);
+    
+    return {
+      success: true,
+      tokens: filteredTokens,
+      totalTokens: tokens.length,
+      accountId: balanceResponse.content.address,
+      network
+    };
   } catch (error) {
-    console.error('Error retrieving all tokens:', error);
-    return [];
+    console.error('Error getting all tokens:', error);
+    return { 
+      success: false, 
+      error: 'Failed to retrieve token balances',
+      tokens: []
+    };
   }
 }
 
 /**
- * Get specific token information by token ID using Hedera SDK
- * 
- * @param username - Twitter username
- * @param tokenId - Hedera token ID
- * @param networkType - 'mainnet' or 'testnet'
- * @returns Promise<Object> - Token information or null if not found
+ * Get token details by ID
+ * @param username Twitter username
+ * @param tokenId Token ID
+ * @param network Network type (testnet or mainnet)
+ * @returns Token details
  */
-export async function getTokenById(username: string, tokenId: string, networkType: string = 'testnet'): Promise<any | null> {
+export async function getTokenById(
+  username: string,
+  tokenId: string,
+  network: string = 'testnet'
+): Promise<any> {
   try {
-    // For backwards compatibility
-    const network = networkType.toLowerCase() === 'mainnet' ? 'mainnet' : 'testnet';
+    // Generate a unique user ID for this request
+    const userId = `user_${Date.now()}`;
     
-    // Get user information to retrieve account details
-    const user = sqliteDbService.userService.getUserByTwitterUsername(username);
-    if (!user || !user.hedera_account_id) {
-      throw new Error('User not found or has no Hedera account');
+    // Query Eliza for token balances - use the same consistent command format
+    const response = await sendCommandToEliza("get token balances", userId, username);
+    
+    // Check if we have a valid response with token balances
+    const balanceResponse = response.find(item => item.content && item.content.amount);
+    
+    if (!balanceResponse || !balanceResponse.content || !balanceResponse.content.amount) {
+      return { 
+        success: false, 
+        error: 'Failed to retrieve token information'
+      };
     }
     
-    const accountId = user.hedera_account_id;
+    // Find the specific token
+    const tokenInfo = balanceResponse.content.amount.find(token => token.tokenId === tokenId);
     
-    // Initialize Hedera client
-    const { Client, AccountId, PrivateKey, TokenInfoQuery, TokenId } = require("@hashgraph/sdk");
-    const privateKey = process.env.HEDERA_PRIVATE_KEY;
-    
-    if (!privateKey) {
-      throw new Error('No private key found in environment variables');
+    if (!tokenInfo) {
+      return {
+        success: false,
+        error: `Token with ID ${tokenId} not found in user's balance`
+      };
     }
     
-    // Create client based on network type
-    const client = network === 'mainnet' 
-      ? Client.forMainnet() 
-      : Client.forTestnet();
+    return {
+      success: true,
+      token: {
+        tokenId: tokenInfo.tokenId,
+        name: tokenInfo.tokenName,
+        symbol: tokenInfo.tokenSymbol,
+        decimals: parseInt(tokenInfo.tokenDecimals),
+        balance: tokenInfo.balanceInDisplayUnit,
+        rawBalance: tokenInfo.balance,
+        accountId: balanceResponse.content.address,
+        network
+      }
+    };
+  } catch (error) {
+    console.error(`Error getting token by ID (${tokenId}):`, error);
+    return { 
+      success: false, 
+      error: 'Failed to retrieve token information'
+    };
+  }
+}
+
+/**
+ * Get user's HBAR balance
+ * @param username Twitter username
+ * @param network Network type (testnet or mainnet)
+ * @returns HBAR balance information
+ */
+export async function getHbarBalance(
+  username: string,
+  network: string = 'testnet'
+): Promise<any> {
+  try {
+    // Generate a unique user ID for this request
+    const userId = `user_${Date.now()}`;
     
-    // Set operator
-    client.setOperator(
-      AccountId.fromString(accountId),
-      PrivateKey.fromStringED25519(privateKey)
+    // Query Eliza for HBAR balance
+    const response = await sendCommandToEliza('What is my HBAR balance', userId, username);
+    
+    // Get the first response item (which should contain the balance info)
+    const balanceResponse = response.find(item => 
+      item.text && item.text.includes('HBAR balance')
     );
     
-    try {
-      // Get token info
-      const tokenInfo = await new TokenInfoQuery()
-        .setTokenId(TokenId.fromString(tokenId))
-        .execute(client);
-      
-      if (!tokenInfo) {
-        return null;
-      }
-      
-      return {
-        token_id: tokenId,
-        name: tokenInfo.name || 'Unknown',
-        symbol: tokenInfo.symbol || 'UNKNOWN',
-        type: tokenInfo.tokenType ? tokenInfo.tokenType.toString() : 'FUNGIBLE_COMMON',
-        supply: tokenInfo.totalSupply ? tokenInfo.totalSupply.toString() : '0',
-        max_supply: tokenInfo.maxSupply ? tokenInfo.maxSupply.toString() : '0',
-        decimals: tokenInfo.decimals || 0,
-        treasury_account_id: tokenInfo.treasuryAccountId ? tokenInfo.treasuryAccountId.toString() : null,
-        custom_fees: tokenInfo.customFees || [],
-        pause_key: !!tokenInfo.pauseKey,
-        kyc_key: !!tokenInfo.kycKey,
-        freeze_key: !!tokenInfo.freezeKey,
-        supply_key: !!tokenInfo.supplyKey,
-        admin_key: !!tokenInfo.adminKey,
-        wipe_key: !!tokenInfo.wipeKey,
-        created_timestamp: tokenInfo.createdTimestamp ? tokenInfo.createdTimestamp.toString() : null,
-        expiry_timestamp: tokenInfo.expiryTimestamp ? tokenInfo.expiryTimestamp.toString() : null,
-        auto_renew_period: tokenInfo.autoRenewPeriod ? tokenInfo.autoRenewPeriod.toString() : null,
-        auto_renew_account_id: tokenInfo.autoRenewAccountId ? tokenInfo.autoRenewAccountId.toString() : null,
-        network: network
+    if (!balanceResponse || !balanceResponse.text) {
+      return { 
+        success: false, 
+        error: 'Failed to retrieve HBAR balance'
       };
-    } finally {
-      if (client) {
-        client.close();
-      }
     }
+    
+    // Extract the balance from the text response
+    // Format example: "Your HBAR balance is 785.20993911 HBAR."
+    const balanceMatch = balanceResponse.text.match(/([0-9.]+)\s+HBAR/);
+    if (!balanceMatch || !balanceMatch[1]) {
+      return {
+        success: false,
+        error: 'Failed to parse HBAR balance from response'
+      };
+    }
+    
+    // Get user to retrieve account ID
+    const user = sqliteDbService.userService.getUserByTwitterUsername(username);
+    if (!user || !user.hedera_account_id) {
+      return {
+        success: false,
+        error: 'User not found or has no Hedera account'
+      };
+    }
+    
+    return {
+      success: true,
+      accountId: user.hedera_account_id,
+      hbarBalance: balanceMatch[1],
+      network
+    };
   } catch (error) {
-    console.error(`Error retrieving token info for ${tokenId}:`, error);
-    return null;
+    console.error('Error getting HBAR balance:', error);
+    return { 
+      success: false, 
+      error: 'Failed to retrieve HBAR balance'
+    };
   }
 } 

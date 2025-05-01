@@ -451,17 +451,16 @@ async function processTweetEvent(tweetEvent: TweetEvent): Promise<void> {
     // Fall back to a generic message for unrecognized commands
     await replyToTweet(
       tweetEvent.id_str,
-      `@${tweetEvent.user.screen_name} I didn't understand that command. Try one of these:
-- "check my balance"
-- "send 5 HBAR to @user"
-- "register 0.0.12345"
-- "create token GameCoin with symbol GC, 2 decimals, and starting supply of 1000000"
-- "show token holders for 0.0.12345"
-- "airdrop 10 TOKEN to @user1 @user2"
-- "mint 100 tokens 0.0.12345"
-- "associate my wallet with token 0.0.12345"
-- "transfer 10 HBAR to account 0.0.12345"
-- "create topic with memo: test memo"`
+      `@${tweetEvent.user.screen_name} I didn't understand that command. Here are some examples:
+Quick Command Guide 🚀
+
+💰 check balance | send HBAR
+🆕 register account
+✨ create/mint tokens
+🎯 airdrop tokens
+📊 view holders
+
+For details, DM me with "help"`
     );
   } catch (error) {
     console.error('Error processing tweet event:', error);

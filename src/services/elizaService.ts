@@ -110,11 +110,10 @@ export async function sendCommandToEliza(command: string, userId: string, userNa
     const response = await axios.post(endpoint, requestData);
     console.log("response",response)
     const responseData = response.data;
-    responseData.map((item: any) => {
-      console.log("item",item.content)
-    })
     console.log("responseData",responseData)
-
+    responseData.map((item: any) => {
+      console.log("responseData.content",item.content)
+    })
     // Validate Eliza's response
     if (!responseData || !Array.isArray(responseData)) {
       console.warn('Invalid response from Eliza:', responseData);

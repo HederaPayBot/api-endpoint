@@ -78,7 +78,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/twitter', twitterRoutes);
 app.use('/api/docs', apiDocsRoutes);
 app.use('/api/eliza', elizaRoutes);
-app.use('/health', healthRoutes);
+app.use('/api/health', healthRoutes);
 
 // Simple root health check for Docker
 app.get('/', (req, res) => {

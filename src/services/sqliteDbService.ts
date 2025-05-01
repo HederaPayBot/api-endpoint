@@ -25,39 +25,94 @@ interface HederaAccount {
   created_at: string;
 }
 
+interface TransactionRecord {
+  id: number;
+  transaction_id: string;
+  transaction_type: string;
+  amount: string;
+  token_id: string;
+  created_at: string;
+  sender_username: string;
+  recipient_username: string | null;
+  status: string;
+  memo: string;
+  network_type: string;
+}
+
 // Make sure db directory exists
 const dbDir = path.resolve(__dirname, '../../db');
 if (!fs.existsSync(dbDir)) {
   fs.mkdirSync(dbDir, { recursive: true });
 }
 
+// Database connection singleton
+let dbConnection: Database.Database | null = null;
+
+/**
+ * Gets the database connection, reusing an existing one if possible
+ * @returns The SQLite database connection
+ */
+function getDb(): Database.Database {
+  if (!dbConnection) {
+    const dbPath = path.resolve(dbDir, 'hedPay.sqlite');
+    dbConnection = new Database(dbPath, { verbose: console.log });
+    
+    // Create tables if they don't exist (only runs when a new connection is created)
+    setupDatabase(dbConnection);
+  }
+  
+  return dbConnection;
+}
+
+/**
+ * Set up the database schema
+ * @param db - Database connection
+ */
+function setupDatabase(db: Database.Database): void {
+  // Create tables if not exist
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    twitter_username TEXT UNIQUE,
+    twitter_id TEXT,
+    hedera_account_id TEXT,
+    created_at TEXT,
+    updated_at TEXT
+  );
+  
+  CREATE TABLE IF NOT EXISTS hedera_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    account_id TEXT,
+    is_primary INTEGER DEFAULT 0,
+    private_key TEXT,
+    public_key TEXT,
+    network_type TEXT DEFAULT 'testnet',
+    key_type TEXT DEFAULT 'ED25519',
+    created_at TEXT,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  );
+  
+  CREATE TABLE IF NOT EXISTS transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender_id INTEGER,
+    recipient_id INTEGER,
+    transaction_id TEXT,
+    transaction_type TEXT,
+    amount TEXT,
+    token_id TEXT,
+    memo TEXT,
+    status TEXT,
+    network_type TEXT,
+    created_at TEXT,
+    FOREIGN KEY(sender_id) REFERENCES users(id),
+    FOREIGN KEY(recipient_id) REFERENCES users(id)
+  );
+  `);
+}
+
 // Initialize database
-const db = new Database(path.resolve(dbDir, 'hedPay.sqlite'));
-
-// Create tables if not exist
-db.exec(`
-CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  twitter_username TEXT UNIQUE,
-  twitter_id TEXT,
-  hedera_account_id TEXT,
-  created_at TEXT,
-  updated_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS hedera_accounts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER,
-  account_id TEXT,
-  is_primary INTEGER DEFAULT 0,
-  private_key TEXT,
-  public_key TEXT,
-  network_type TEXT DEFAULT 'testnet',
-  key_type TEXT DEFAULT 'ED25519',
-  created_at TEXT,
-  FOREIGN KEY(user_id) REFERENCES users(id)
-);
-`);
+const db = getDb();
 
 /**
  * User Service
@@ -417,9 +472,9 @@ export const hederaAccountService = {
  * @param memo - Transaction memo or description
  * @param status - Transaction status (SUCCESS, FAILED)
  * @param networkType - Network type (testnet, mainnet)
- * @returns Promise<boolean> - Whether the operation was successful
+ * @returns boolean - Whether the operation was successful
  */
-export async function saveTransaction(
+export function saveTransaction(
   senderUsername: string,
   recipientUsername: string | null,
   transactionId: string,
@@ -429,13 +484,14 @@ export async function saveTransaction(
   memo: string,
   status: string,
   networkType: string
-): Promise<boolean> {
+): boolean {
   try {
-    const db = await getDb();
+    const db = getDb();
     
     // Get the user IDs for sender and recipient
-    const senderId = await getUserIdFromTwitterUsername(senderUsername);
-    
+    // Ensure username is lowercase for consistency
+    const senderId = getUserIdFromTwitterUsername(senderUsername.toLowerCase());
+    console.log("senderId", senderId);
     if (!senderId) {
       console.log(`Could not find user ID for sender @${senderUsername}`);
       return false;
@@ -443,7 +499,9 @@ export async function saveTransaction(
     
     let recipientId = null;
     if (recipientUsername) {
-      recipientId = await getUserIdFromTwitterUsername(recipientUsername);
+      // Ensure recipient username is lowercase for consistency
+      recipientId = getUserIdFromTwitterUsername(recipientUsername.toLowerCase());
+      console.log("recipientId", recipientId);
     }
     
     // Insert transaction into the database
@@ -475,7 +533,8 @@ export async function saveTransaction(
       new Date().toISOString()
     ];
     
-    await db.run(query, params);
+    const stmt = db.prepare(query);
+    stmt.run(...params);
     
     console.log(`Transaction ${transactionId} saved to database`);
     return true;
@@ -487,15 +546,15 @@ export async function saveTransaction(
 
 /**
  * Helper function to get user ID from Twitter username
- * @param {string} username - Twitter username
- * @returns {Promise<string|null>} - User ID or null if not found
+ * @param username - Twitter username
+ * @returns User ID or null if not found
  */
-async function getUserIdFromTwitterUsername(username) {
+function getUserIdFromTwitterUsername(username: string): number | null {
   try {
-
-    // Query database first to check if the user already exists
-    const db = await getDb();
-    const user = await db.get(`SELECT id FROM users WHERE twitter_username = ?`, [username]);
+    // Query database to check if the user already exists
+    const db = getDb();
+    const stmt = db.prepare(`SELECT id FROM users WHERE twitter_username = ?`);
+    const user = stmt.get(username.toLowerCase()) as { id: number } | undefined;
     
     if (user) {
       return user.id;
@@ -509,22 +568,121 @@ async function getUserIdFromTwitterUsername(username) {
 }
 
 /**
- * Gets the database connection
- * @returns A Promise that resolves to the database connection
+ * Export a combined service for convenience
  */
-async function getDb() {
-  // Assuming you're using a sqlite3 library with promises like sqlite or better-sqlite3 with promise wrapper
-  const sqlite3 = require('sqlite3').verbose();
-  const { open } = require('sqlite');
-  
-  return open({
-    filename: process.env.DATABASE_PATH || './db/hedPay.sqlite',
-    driver: sqlite3.Database
-  });
-}
-
-// Export a combined service for convenience
 export default {
   user: userService,
   hederaAccount: hederaAccountService
 }; 
+
+/**
+ * Get transaction history for a user
+ * @param userId - User ID
+ * @returns Array of transactions
+ */
+export function getTransactionHistory(userId: number): any[] {
+  try {
+    const db = getDb();
+    
+    // Get all transactions where the user is either sender or recipient
+    const query = `
+      SELECT 
+        t.*,
+        sender.twitter_username as sender_username,
+        recipient.twitter_username as recipient_username
+      FROM 
+        transactions t
+      LEFT JOIN 
+        users sender ON t.sender_id = sender.id
+      LEFT JOIN 
+        users recipient ON t.recipient_id = recipient.id
+      WHERE 
+        t.sender_id = ? OR t.recipient_id = ?
+      ORDER BY 
+        t.created_at DESC
+    `;
+    
+    const stmt = db.prepare(query);
+    const transactions = stmt.all(userId, userId) as TransactionRecord[];
+    
+    return transactions.map(tx => ({
+      id: tx.id,
+      hedera_transaction_id: tx.transaction_id,
+      transaction_type: tx.transaction_type,
+      amount: tx.amount,
+      token_id: tx.token_id,
+      timestamp: tx.created_at,
+      sender_username: tx.sender_username,
+      recipient_username: tx.recipient_username,
+      status: tx.status,
+      memo: tx.memo,
+      network_type: tx.network_type,
+      source: 'local_db'
+    }));
+  } catch (error) {
+    console.error(`Error getting transaction history for user ID (${userId}):`, error);
+    return [];
+  }
+}
+
+/**
+ * Get transaction by ID
+ * @param transactionId - Hedera transaction ID
+ * @param username - Twitter username (for verification)
+ * @returns Transaction object or null if not found
+ */
+export function getTransactionById(transactionId: string, username: string): any | null {
+  try {
+    const db = getDb();
+    
+    // Get transaction with sender and recipient details
+    const query = `
+      SELECT 
+        t.*,
+        sender.twitter_username as sender_username,
+        recipient.twitter_username as recipient_username
+      FROM 
+        transactions t
+      LEFT JOIN 
+        users sender ON t.sender_id = sender.id
+      LEFT JOIN 
+        users recipient ON t.recipient_id = recipient.id
+      WHERE 
+        t.transaction_id = ?
+      LIMIT 1
+    `;
+    
+    const stmt = db.prepare(query);
+    const transaction = stmt.get(transactionId) as TransactionRecord | undefined;
+    
+    if (!transaction) {
+      return null;
+    }
+    
+    // Verify the user is related to this transaction if username is provided
+    if (username && 
+        transaction.sender_username !== username && 
+        transaction.recipient_username !== username) {
+      console.log(`User ${username} is not related to transaction ${transactionId}`);
+      return null;
+    }
+    
+    return {
+      id: transaction.id,
+      hedera_transaction_id: transaction.transaction_id,
+      transaction_type: transaction.transaction_type,
+      amount: transaction.amount,
+      token_id: transaction.token_id,
+      timestamp: transaction.created_at,
+      sender_username: transaction.sender_username,
+      recipient_username: transaction.recipient_username,
+      status: transaction.status,
+      memo: transaction.memo,
+      network_type: transaction.network_type,
+      source: 'local_db'
+    };
+  } catch (error) {
+    console.error(`Error getting transaction by ID (${transactionId}):`, error);
+    return null;
+  }
+} 

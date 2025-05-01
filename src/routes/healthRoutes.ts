@@ -1,4 +1,7 @@
 import { Router } from 'express';
+import Database from 'better-sqlite3';
+import path from 'path';
+import fs from 'fs';
 
 const router = Router();
 
@@ -29,8 +32,8 @@ router.get('/ready', async (req, res) => {
     const dbAvailable = await checkDatabase();
     
     // Check if Hedera configuration is available
-    const hederaConfigured = !!process.env.HEDERA_OPERATOR_ID && 
-                            !!process.env.HEDERA_OPERATOR_KEY;
+    const hederaConfigured = !!process.env.HEDERA_ACCOUNT_ID && 
+                            !!process.env.HEDERA_PRIVATE_KEY;
     
     // Return health status
     if (dbAvailable && hederaConfigured) {
@@ -57,11 +60,22 @@ router.get('/ready', async (req, res) => {
  */
 async function checkDatabase(): Promise<boolean> {
   try {
-    // Simple check to see if we can access the database
-    const { db } = require('../services/sqliteDbService');
+    // Make sure db directory exists
+    const dbDir = path.resolve(__dirname, '../../db');
+    if (!fs.existsSync(dbDir)) {
+      fs.mkdirSync(dbDir, { recursive: true });
+    }
+    
+    // Try to initialize a connection to the database
+    const dbPath = path.resolve(dbDir, 'hedPay.sqlite');
+    const db = new Database(dbPath);
     
     // If this doesn't throw an error, the database is available
     const dbVersion = db.pragma('user_version', { simple: true });
+    
+    // Close the database connection
+    db.close();
+    
     return true;
   } catch (error) {
     console.error('Database check error:', error);

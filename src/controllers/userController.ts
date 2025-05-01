@@ -1,11 +1,10 @@
 import { Request, Response } from 'express';
-import { userService, hederaAccountService } from '../services/sqliteDbService';
+import { userService, hederaAccountService, getTransactionHistory, getTransactionById } from '../services/sqliteDbService';
 import { encryptSensitiveData } from '../services/credentialService';
 import { 
-  getTransactionHistory, 
-  getTransactionById, 
   getTokenById,
   getAllTokens,
+  getHbarBalance
 } from '../services/hederaAccountService';
 
 /**
@@ -441,9 +440,9 @@ export const getUserTransactionHistory = async (req: Request, res: Response): Pr
       });
     }
 
-    // Get transactions using Eliza integration
+    // Get transactions directly from the database
     const transactions = await getTransactionHistory(user.id);
-    console.log("transactions",transactions)
+    
     return res.status(200).json({
       success: true,
       transactions: transactions.map(tx => ({
@@ -482,7 +481,7 @@ export const getUserTransactionHistory = async (req: Request, res: Response): Pr
  */
 export const getTransactionDetails = async (req: Request, res: Response): Promise<Response> => {
   try {
-    const { transactionId,username } = req.params;
+    const { transactionId, username } = req.params;
     
     if (!transactionId) {
       return res.status(400).json({
@@ -491,14 +490,15 @@ export const getTransactionDetails = async (req: Request, res: Response): Promis
       });
     }
 
-    if(!username){
+    if (!username) {
       return res.status(400).json({
         success: false,
         error: 'Username parameter is required'
       });
     }
-    // Get transaction from database or Eliza
-    const transaction = await getTransactionById(transactionId,username);
+    
+    // Get transaction directly from the database
+    const transaction = await getTransactionById(transactionId, username);
     
     if (!transaction) {
       return res.status(404).json({
@@ -543,18 +543,20 @@ export const getTransactionDetails = async (req: Request, res: Response): Promis
  * @api {get} /api/user/all-tokens Get all tokens
  * @apiName GetAllTokens
  * @apiGroup Tokens
- * @apiDescription Get a list of all tokens
+ * @apiDescription Get a list of all tokens for a user from their Hedera account
  * 
+ * @apiParam {String} username User's Twitter username
  * @apiQuery {String} [network=testnet] Network to fetch tokens from (testnet or mainnet)
  * @apiQuery {Number} [limit=100] Number of tokens to return (max 1000)
  * @apiQuery {String} [startingToken] Token ID to start from for pagination
  * 
+ * @apiSuccess {Boolean} success Whether the operation was successful
  * @apiSuccess {Object[]} tokens List of tokens
  * @apiSuccess {String} tokens.tokenId Token ID
  * @apiSuccess {String} tokens.name Token name
  * @apiSuccess {String} tokens.symbol Token symbol
  * @apiSuccess {Number} tokens.decimals Token decimals
- * @apiSuccess {String} tokens.totalSupply Total supply of the token
+ * @apiSuccess {String} tokens.balance Token balance in display units
  */
 export const getAllUserTokens = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -564,28 +566,48 @@ export const getAllUserTokens = async (req: Request, res: Response): Promise<voi
     const startingToken = req.query.startingToken as string;
 
     if(!username){
-      res.status(400).json({ error: 'Username is required' });
+      res.status(400).json({ 
+        success: false, 
+        error: 'Username is required' 
+      });
       return;
     }
 
     // Validate network parameter
     if (network !== 'testnet' && network !== 'mainnet') {
-      res.status(400).json({ error: 'Invalid network parameter. Must be "testnet" or "mainnet"' });
+      res.status(400).json({ 
+        success: false, 
+        error: 'Invalid network parameter. Must be "testnet" or "mainnet"' 
+      });
       return;
     }
 
     // Validate limit parameter
     if (isNaN(limit) || limit < 1 || limit > 1000) {
-      res.status(400).json({ error: 'Invalid limit parameter. Must be a number between 1 and 1000' });
+      res.status(400).json({ 
+        success: false, 
+        error: 'Invalid limit parameter. Must be a number between 1 and 1000' 
+      });
       return;
     }
 
-    const tokens = await getAllTokens(username,network,limit,startingToken);
+    const result = await getAllTokens(username, network, limit, startingToken);
 
-    res.status(200).json(tokens);
+    if (!result.success) {
+      res.status(400).json({ 
+        success: false, 
+        error: result.error 
+      });
+      return;
+    }
+
+    res.status(200).json(result);
   } catch (error) {
     console.error('Error fetching all tokens:', error);
-    res.status(500).json({ error: 'Failed to fetch tokens' });
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch tokens' 
+    });
   }
 };
 
@@ -595,16 +617,17 @@ export const getAllUserTokens = async (req: Request, res: Response): Promise<voi
  * @apiGroup Tokens
  * @apiDescription Get detailed information about a specific token by its ID
  * 
+ * @apiParam {String} username User's Twitter username
  * @apiParam {String} tokenId Token ID to fetch
  * @apiQuery {String} [network=testnet] Network to fetch token from (testnet or mainnet)
  * 
- * @apiSuccess {String} tokenId Token ID
- * @apiSuccess {String} name Token name
- * @apiSuccess {String} symbol Token symbol
- * @apiSuccess {Number} decimals Token decimals
- * @apiSuccess {String} totalSupply Total supply of the token
- * @apiSuccess {Object} treasury Treasury account information
- * @apiSuccess {String[]} [customFees] Custom fees associated with the token
+ * @apiSuccess {Boolean} success Whether the operation was successful
+ * @apiSuccess {Object} token Token details
+ * @apiSuccess {String} token.tokenId Token ID
+ * @apiSuccess {String} token.name Token name
+ * @apiSuccess {String} token.symbol Token symbol
+ * @apiSuccess {Number} token.decimals Token decimals
+ * @apiSuccess {String} token.balance Token balance in display units
  */
 export const getUserTokenById = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -613,33 +636,128 @@ export const getUserTokenById = async (req: Request, res: Response): Promise<voi
 
     // Validate tokenId parameter
     if (!tokenId) {
-      res.status(400).json({ error: 'Token ID is required' });
+      res.status(400).json({ 
+        success: false, 
+        error: 'Token ID is required' 
+      });
       return;
     }
 
     if(!username){
-      res.status(400).json({ error: 'Username is required' });
+      res.status(400).json({ 
+        success: false, 
+        error: 'Username is required' 
+      });
       return;
     }
 
     // Validate network parameter
     if (network !== 'testnet' && network !== 'mainnet') {
-      res.status(400).json({ error: 'Invalid network parameter. Must be "testnet" or "mainnet"' });
+      res.status(400).json({ 
+        success: false, 
+        error: 'Invalid network parameter. Must be "testnet" or "mainnet"' 
+      });
       return;
     }
 
     
-    const token = await getTokenById(username,tokenId, network);
+    const result = await getTokenById(username, tokenId, network);
 
-    if (!token) {
-      res.status(404).json({ error: 'Token not found' });
+    if (!result.success) {
+      const statusCode = result.error.includes('not found') ? 404 : 400;
+      res.status(statusCode).json({ 
+        success: false, 
+        error: result.error 
+      });
       return;
     }
 
-    res.status(200).json(token);
+    res.status(200).json(result);
   } catch (error) {
     console.error(`Error fetching token ${req.params.tokenId}:`, error);
-    res.status(500).json({ error: 'Failed to fetch token details' });
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch token details' 
+    });
+  }
+};
+
+/**
+ * @api {get} /api/users/hbar-balance/:username Get user's HBAR balance
+ * @apiName GetHbarBalance
+ * @apiGroup User
+ * @apiDescription Get a user's HBAR balance from their Hedera account
+ * 
+ * @apiParam {String} username User's Twitter username
+ * @apiQuery {String} [network=testnet] Network to fetch balance from (testnet or mainnet)
+ * 
+ * @apiSuccess {Boolean} success Whether the operation was successful
+ * @apiSuccess {String} accountId The user's Hedera account ID
+ * @apiSuccess {String} hbarBalance The user's HBAR balance
+ * @apiSuccess {String} network The network queried (testnet or mainnet)
+ * @apiError {String} error Error message
+ */
+export const getUserHbarBalance = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { username } = req.params;
+    const network = req.query.network as string || 'testnet';
+    
+    if (!username) {
+      res.status(400).json({ 
+        success: false, 
+        error: 'Username is required' 
+      });
+      return;
+    }
+    
+    // Validate network parameter
+    if (network !== 'testnet' && network !== 'mainnet') {
+      res.status(400).json({ 
+        success: false, 
+        error: 'Invalid network parameter. Must be "testnet" or "mainnet"' 
+      });
+      return;
+    }
+    
+    // Get user from database
+    const user = userService.getUserByTwitterUsername(username);
+    
+    if (!user) {
+      res.status(404).json({
+        success: false,
+        error: `User @${username} not found`
+      });
+      return;
+    }
+    
+    // Get user's Hedera account ID
+    const accountId = user.hedera_account_id;
+    if (!accountId) {
+      res.status(404).json({
+        success: false,
+        error: `User @${username} does not have a linked Hedera account`
+      });
+      return;
+    }
+    
+    // Get HBAR balance from Eliza
+    const result = await getHbarBalance(username, network);
+    
+    if (!result.success) {
+      res.status(400).json({ 
+        success: false, 
+        error: result.error 
+      });
+      return;
+    }
+    
+    res.status(200).json(result);
+  } catch (error) {
+    console.error('Error getting HBAR balance:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to retrieve HBAR balance' 
+    });
   }
 };
 
