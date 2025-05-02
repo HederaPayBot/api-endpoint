@@ -15,6 +15,12 @@ declare global {
  */
 export const initTwitterClient = async (): Promise<void> => {
   try {
+    // Check if Twitter integration is explicitly disabled
+    if (process.env.DISABLE_TWITTER_INTEGRATION === 'true') {
+      console.log('Twitter integration is explicitly disabled via DISABLE_TWITTER_INTEGRATION env variable');
+      return;
+    }
+    
     // Check if required environment variables are present
     if (!process.env.TWITTER_USERNAME || !process.env.TWITTER_PASSWORD || !process.env.TWITTER_EMAIL) {
       throw new Error('TWITTER_USERNAME, TWITTER_PASSWORD, and TWITTER_EMAIL are required environment variables');
@@ -30,9 +36,9 @@ export const initTwitterClient = async (): Promise<void> => {
     const scraper = new Scraper();
     global.twitterScraper = scraper;
 
-    console.log('Logging in...');
+    console.log('Logging in to Twitter...');
     const cookies = await scraper.getCookies();
-    console.log(`cookie: ${cookies}`);
+    console.log(`cookie: ${cookies ? 'received' : 'not available'}`);
     
     // Login with credentials and provide 2FA if available
     await scraper.login(
@@ -46,8 +52,6 @@ export const initTwitterClient = async (): Promise<void> => {
       process.env.TWITTER_ACCESS_TOKEN_SECRET || ''
     );
     console.log('Logged in successfully');
-    console.log(`cookie: ${cookies}`);
-
 
     // Verify login was successful
     const isLoggedIn = await scraper.isLoggedIn();
@@ -68,9 +72,12 @@ export const initTwitterClient = async (): Promise<void> => {
       console.error('2. Mark your Twitter account as "Automated" in Twitter settings');
       console.error('3. Try logging out of Twitter in your browser');
       console.error('4. Try connecting to/disconnecting from a VPN');
+      console.error('5. Add DISABLE_TWITTER_INTEGRATION=true to your .env file to run without Twitter features');
       console.error('-----------------------------------------\n');
     }
     
+    // Clean up in case of error
+    global.twitterScraper = undefined;
     throw error;
   }
 };

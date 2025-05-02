@@ -14,6 +14,17 @@ import healthRoutes from './routes/healthRoutes';
 import { initTwitterClient } from './services/twitterClient';
 import { startPollingService } from './services/pollingService';
 
+// Add global process error handlers
+process.on('uncaughtException', (error) => {
+  console.error('UNCAUGHT EXCEPTION:', error);
+  console.error('The application will attempt to continue, but may be in an unstable state');
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('UNHANDLED REJECTION at:', promise, 'reason:', reason);
+  console.error('The application will attempt to continue, but may be in an unstable state');
+});
+
 // Load environment variables
 dotenv.config();
 
@@ -135,37 +146,93 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   });
 });
 
+// Initialize Twitter client without crashing on failure
+const tryInitTwitterClient = async () => {
+  try {
+    await initTwitterClient();
+    console.log('Twitter client initialized successfully');
+    return true;
+  } catch (error) {
+    console.error('Failed to initialize Twitter client. Continuing without Twitter integration:', error);
+    console.log('The application will run, but Twitter features will be disabled.');
+    return false;
+  }
+};
+
 // Start server
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   
-  // Initialize Twitter client
-  await initTwitterClient();
-  
-  // Setup HCS topic after server starts
-  await setupHcsTopic();
-  
-  // Start Twitter polling service if Twitter client is initialized
-  if (global.twitterScraper) {
-    // Get polling interval from environment or default to 60 seconds
-    const pollingIntervalMs = process.env.TWITTER_POLL_INTERVAL 
-      ? parseInt(process.env.TWITTER_POLL_INTERVAL) * 1000 
-      : 60000;
+  try {
+    // Try to initialize Twitter client, but continue even if it fails
+    console.log('Attempting to initialize Twitter client...');
     
-    startPollingService(pollingIntervalMs);
-    console.log(`Started Twitter polling service with interval: ${pollingIntervalMs / 1000} seconds`);
-  } else {
-    console.warn('Twitter client not initialized, polling service not started');
+    // Check if Twitter integration is disabled
+    if (process.env.DISABLE_TWITTER_INTEGRATION === 'true') {
+      console.log('Twitter integration is explicitly disabled via environment variable');
+      
+      // Skip Twitter initialization and HCS topic setup
+      console.log(`
+        🚀 Hedera Twitter Pay API is running at http://localhost:${PORT}
+        ⚠️ RUNNING IN MINIMAL MODE - Twitter integration disabled
+        🔗 Hedera client: running
+        📋 API docs: http://localhost:${PORT}/api/docs
+        🔧 Environment: ${process.env.NODE_ENV || 'development'}
+      `);
+      
+      return; // Early return to prevent further initialization
+    }
+    
+    const twitterInitialized = await tryInitTwitterClient();
+    console.log(`Twitter client initialization result: ${twitterInitialized ? 'SUCCESS' : 'FAILED but continuing'}`);
+    
+    // Setup HCS topic after server starts
+    console.log('Attempting to setup HCS topic...');
+    await setupHcsTopic();
+    console.log('HCS topic setup completed');
+    
+    // Start Twitter polling service only if Twitter client was initialized
+    if (twitterInitialized && global.twitterScraper) {
+      // Get polling interval from environment or default to 60 seconds
+      const pollingIntervalMs = process.env.TWITTER_POLL_INTERVAL 
+        ? parseInt(process.env.TWITTER_POLL_INTERVAL) * 1000 
+        : 60000;
+      
+      console.log(`Starting Twitter polling service with interval: ${pollingIntervalMs / 1000} seconds`);
+      startPollingService(pollingIntervalMs);
+      console.log('Twitter polling service started successfully');
+    } else {
+      console.warn('Twitter client not initialized, polling service not started');
+    }
+    
+    console.log(`
+      🚀 Hedera Twitter Pay API is running at http://localhost:${PORT}
+      🐦 Twitter integration: ${global.twitterScraper ? 'running (using agent-twitter-client)' : 'not running (disabled)'}
+      🔗 Hedera client: running
+      📋 API docs: http://localhost:${PORT}/api/docs
+      🔧 Environment: ${process.env.NODE_ENV || 'development'}
+      ⏱️ Polling interval: ${process.env.TWITTER_POLL_INTERVAL || '60'} seconds
+    `);
+  } catch (error) {
+    console.error('CRITICAL ERROR DURING STARTUP:');
+    console.error('------------------------------');
+    console.error(error);
+    if (error instanceof Error) {
+      console.error(`Error name: ${error.name}`);
+      console.error(`Error message: ${error.message}`);
+      console.error(`Error stack: ${error.stack}`);
+    }
+    console.error('------------------------------');
+    console.error('Server will continue to run without Twitter integration');
+    
+    console.log(`
+      🚀 Hedera Twitter Pay API is running at http://localhost:${PORT}
+      ⚠️ Started with errors - some features may be disabled
+      🔗 Hedera client: running
+      📋 API docs: http://localhost:${PORT}/api/docs
+      🔧 Environment: ${process.env.NODE_ENV || 'development'}
+    `);
   }
-  
-  console.log(`
-    🚀 Hedera Twitter Pay API is running at http://localhost:${PORT}
-    🐦 Twitter integration: ${global.twitterScraper ? 'running (using agent-twitter-client)' : 'not running'}
-    🔗 Hedera client: running
-    📋 API docs: http://localhost:${PORT}/api/docs
-    🔧 Environment: ${process.env.NODE_ENV || 'development'}
-    ⏱️ Polling interval: ${process.env.TWITTER_POLL_INTERVAL || '60'} seconds
-  `);
 });
 
 export { hederaClient }; 

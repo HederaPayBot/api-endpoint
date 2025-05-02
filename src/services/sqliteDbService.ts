@@ -54,11 +54,63 @@ let dbConnection: Database.Database | null = null;
  */
 function getDb(): Database.Database {
   if (!dbConnection) {
-    const dbPath = path.resolve(dbDir, 'hedPay.sqlite');
-    dbConnection = new Database(dbPath, { verbose: console.log });
-    
-    // Create tables if they don't exist (only runs when a new connection is created)
-    setupDatabase(dbConnection);
+    try {
+      console.log('Initializing SQLite database connection...');
+      
+      // Get the database path from environment variable or use default
+      const dbPath = process.env.SQLITE_DB_PATH || path.resolve(dbDir, 'hedPay.sqlite');
+      console.log(`Using database path: ${dbPath}`);
+      
+      // Check if directory exists
+      const dbDirPath = path.dirname(dbPath);
+      if (!fs.existsSync(dbDirPath)) {
+        console.log(`Creating database directory: ${dbDirPath}`);
+        fs.mkdirSync(dbDirPath, { recursive: true });
+      }
+      
+      // Check if we can write to the directory
+      try {
+        const testFile = path.join(dbDirPath, '.write_test');
+        fs.writeFileSync(testFile, 'test');
+        fs.unlinkSync(testFile);
+        console.log(`Directory ${dbDirPath} is writable`);
+      } catch (writeError) {
+        console.error(`Database directory is not writable: ${writeError.message}`);
+        throw new Error(`Cannot write to database directory: ${writeError.message}`);
+      }
+      
+      // Connect to the database with verbose logging
+      console.log(`Opening database connection to: ${dbPath}`);
+      dbConnection = new Database(dbPath, { 
+        verbose: process.env.NODE_ENV === 'development' ? console.log : undefined
+      });
+      
+      // Test the connection by running a simple query
+      try {
+        dbConnection.prepare('SELECT 1').get();
+        console.log('Database connection test successful');
+      } catch (queryError) {
+        console.error(`Database connection test failed: ${queryError.message}`);
+        throw queryError;
+      }
+      
+      // Create tables if they don't exist (only runs when a new connection is created)
+      setupDatabase(dbConnection);
+      console.log('Database setup completed successfully');
+    } catch (error) {
+      console.error('CRITICAL DATABASE ERROR:');
+      console.error('-------------------------');
+      console.error(error);
+      if (error instanceof Error) {
+        console.error(`Error name: ${error.name}`);
+        console.error(`Error message: ${error.message}`);
+        console.error(`Error stack: ${error.stack}`);
+      }
+      console.error('-------------------------');
+      
+      // Rethrow but don't exit - let the application handle it
+      throw new Error(`Failed to initialize database: ${error.message}`);
+    }
   }
   
   return dbConnection;
