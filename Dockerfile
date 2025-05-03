@@ -11,14 +11,14 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy package files
-COPY package.json pnpm-lock.yaml ./
+# Copy only package.json first (pnpm-lock.yaml might be in .gitignore)
+COPY package.json ./
 
 # Install pnpm
 RUN npm install -g pnpm
 
 # Install dependencies without rebuilding native modules yet
-RUN pnpm install --frozen-lockfile
+RUN pnpm install
 
 # Copy source code
 COPY . .
@@ -42,14 +42,14 @@ RUN apt-get update && apt-get install -y \
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy package files
-COPY package.json pnpm-lock.yaml ./
+# Copy only package.json first
+COPY package.json ./
 
 # Install pnpm
 RUN npm install -g pnpm
 
 # Install only production dependencies without rebuilding native modules
-RUN pnpm install --prod --frozen-lockfile
+RUN pnpm install --prod
 
 # Copy the rebuilt better-sqlite3 module from builder stage
 COPY --from=builder /app/node_modules/better-sqlite3 /app/node_modules/better-sqlite3
