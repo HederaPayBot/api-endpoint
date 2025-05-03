@@ -67,10 +67,11 @@ VOLUME /app/db
 
 # Set environment variables
 ENV NODE_ENV=production
-ENV PORT=3001
+# Use PORT from .env or default to 3001
+ENV PORT=${PORT:-3001}
 
 # Expose the port
-EXPOSE 3001
+EXPOSE ${PORT}
 
 # Use the entrypoint script
 ENTRYPOINT ["docker-entrypoint.sh"]
