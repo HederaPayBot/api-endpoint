@@ -11,6 +11,14 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${PORT:-3001}/api/health"]
+      interval: 5s
+      timeout: 20s
+      retries: 10
+    environment:
+      - NODE_ENV=production
+      - SQLITE_REBUILD=true
     # healthcheck:
     #   test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${PORT:-3001}"]
     #   interval: 5s

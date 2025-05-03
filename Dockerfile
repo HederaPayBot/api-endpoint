@@ -34,12 +34,13 @@ FROM node:18-slim
 
 WORKDIR /app
 
-# Install runtime dependencies for SQLite
+# Install runtime dependencies for SQLite and healthcheck
 RUN apt-get update && apt-get install -y \
     openssl \
     python3 \
     make \
     g++ \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy only package.json first
