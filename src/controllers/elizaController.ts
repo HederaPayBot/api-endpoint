@@ -24,7 +24,7 @@ export const getElizaStatus = async (req: Request, res: Response): Promise<Respo
   try {
     // Construct the Eliza endpoint URL
     const encodedAgentName = encodeURIComponent(ELIZA_AGENT_NAME);
-    const elizaStatusEndpoint = `${ELIZA_API_URL}/${encodedAgentName}/status`;
+    const elizaStatusEndpoint = `${ELIZA_API_URL}/status`;
     
     // Try to reach Eliza
     const response = await axios.get(elizaStatusEndpoint, {
