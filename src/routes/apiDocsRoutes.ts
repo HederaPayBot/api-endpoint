@@ -408,7 +408,7 @@ const swaggerOptions = {
             },
             message: {
               type: 'string',
-              example: 'Successfully created Hedera account 0.0.12345 for @username and funded with 10 HBAR'
+              example: "Hedera account 0.0.12345 created for @username. Check details: https://hashscan.io/testnet/tx/0.0.12345@1624123456.789012345"
             },
             accountId: {
               type: 'string',
@@ -526,7 +526,7 @@ const specs = swaggerJsdoc(swaggerOptions);
  *                   example: true
  *                 message:
  *                   type: string
- *                   example: Hedera account 0.0.12345 created for @username. Check details: https://hashscan.io/testnet/tx/0.0.12345@1624123456.789012345
+ *                   example: "Hedera account 0.0.12345 created for @username. Check details: https://hashscan.io/testnet/tx/0.0.12345@1624123456.789012345"
  *                 accountId:
  *                   type: string
  *                   example: 0.0.12345
@@ -620,7 +620,7 @@ const specs = swaggerJsdoc(swaggerOptions);
  *                   example: true
  *                 message:
  *                   type: string
- *                   example: Hedera account 0.0.12345 linked to @username
+ *                   example: "Hedera account 0.0.12345 linked to @username"
  *       400:
  *         description: Invalid request parameters
  *       404:
@@ -700,7 +700,7 @@ const specs = swaggerJsdoc(swaggerOptions);
  *                   example: true
  *                 message:
  *                   type: string
- *                   example: Hedera account 0.0.12345 linked to @username
+ *                   example: "Hedera account 0.0.12345 linked to @username"
  *       400:
  *         description: Invalid request parameters
  *       404:

@@ -66,23 +66,23 @@ const initHederaClient = () => {
 initHederaClient();
 
 // Create HCS topic if not already set
-const setupHcsTopic = async () => {
-  if (!process.env.HCS_TOPIC_ID) {
-    try {
-      const hederaService = require('./services/hederaService').default;
-      const topicId = await hederaService.createTopic();
-      console.log(`Created new HCS topic: ${topicId}`);
-      process.env.HCS_TOPIC_ID = topicId;
-    } catch (error) {
-      console.error('Error creating HCS topic:', error);
-      console.log('Continuing without HCS topic...');
-      // Set a dummy topic ID to prevent future attempts
-      process.env.HCS_TOPIC_ID = 'not_available';
-    }
-  } else {
-    console.log(`Using existing HCS topic: ${process.env.HCS_TOPIC_ID}`);
-  }
-};
+// const setupHcsTopic = async () => {
+//   if (!process.env.HCS_TOPIC_ID) {
+//     try {
+//       const hederaService = require('./services/hederaService').default;
+//       const topicId = await hederaService.createTopic();
+//       console.log(`Created new HCS topic: ${topicId}`);
+//       process.env.HCS_TOPIC_ID = topicId;
+//     } catch (error) {
+//       console.error('Error creating HCS topic:', error);
+//       console.log('Continuing without HCS topic...');
+//       // Set a dummy topic ID to prevent future attempts
+//       process.env.HCS_TOPIC_ID = 'not_available';
+//     }
+//   } else {
+//     console.log(`Using existing HCS topic: ${process.env.HCS_TOPIC_ID}`);
+//   }
+// };
 
 // Routes
 app.use('/api/users', userRoutes);
@@ -187,9 +187,9 @@ app.listen(PORT, async () => {
     console.log(`Twitter client initialization result: ${twitterInitialized ? 'SUCCESS' : 'FAILED but continuing'}`);
     
     // Setup HCS topic after server starts
-    console.log('Attempting to setup HCS topic...');
-    await setupHcsTopic();
-    console.log('HCS topic setup completed');
+    // console.log('Attempting to setup HCS topic...');
+    // await setupHcsTopic();
+    // console.log('HCS topic setup completed');
     
     // Start Twitter polling service only if Twitter client was initialized
     if (twitterInitialized && global.twitterScraper) {

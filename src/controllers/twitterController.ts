@@ -69,12 +69,12 @@ export const processMentions = async (req: Request, res: Response): Promise<Resp
     if (recentMentions.length === 0) {
       return res.status(200).json({ 
         status: 'success', 
-        message: 'No recent mentions found in the last 5 minutes',
+        message: 'No new mentions found to process',
         processed: 0
       });
     }
     
-    console.log(`Processing ${recentMentions.length} mentions from the last 5 minutes...`);
+    console.log(`Processing ${recentMentions.length} mentions...`);
     
     let processed = 0;
     const errors: any[] = [];
@@ -120,20 +120,9 @@ export const processMentions = async (req: Request, res: Response): Promise<Resp
           }
         }
         
-        // Instead of a fixed time window, use a relative age check
+        // Log time information for debugging
         const serverTime = new Date();
-        const tweetAgeMinutes = Math.abs(serverTime.getTime() - tweetDate.getTime()) / (60 * 1000);
-        const maxAgeMinutes = 40320; // 28 days (increased from 7 days to match twitterService)
-        
-        // Log detailed time information for debugging
-        console.log(`Tweet ${id} date: ${tweetDate.toISOString()}, Age: ${tweetAgeMinutes.toFixed(1)} minutes, Server time: ${serverTime.toISOString()}`);
-        
-        // Skip if tweet is too old (but this should rarely happen since filterRecentMentions already filtered)
-        if (tweetAgeMinutes > maxAgeMinutes) {
-          console.log(`Skipping tweet ${id} - ${tweetAgeMinutes.toFixed(1)} minutes old (older than ${maxAgeMinutes} minutes cutoff)`);
-          await markAsProcessed(id, true); // Mark as skipped due to age
-          continue;
-        }
+        console.log(`Tweet ${id} date: ${tweetDate.toISOString()}, Server time: ${serverTime.toISOString()}`);
         
         if (!id) {
           console.log('Skipping mention with no ID:', mention);

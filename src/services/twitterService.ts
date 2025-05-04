@@ -809,8 +809,7 @@ export async function generateBalanceResponse(
 // Simplified approach to storing processed tweets
 // Use a Map with tweet ID as key and processed time as value
 const processedTweets = new Map<string, number>();
-const MAX_PROCESSED_TWEETS = 500; // Reduced from 1000 to use less memory
-const TWEET_CACHE_EXPIRATION_MS = 4 * 60 * 60 * 1000; // 4 hours expiration instead of 7 days
+const MAX_PROCESSED_TWEETS = 10000;
 
 /**
  * Check if a tweet has been processed before
@@ -823,22 +822,6 @@ export async function hasBeenProcessed(tweetId: string): Promise<boolean> {
     return false;
   }
 
-  // Simple cleanup on every check to avoid memory buildup
-  const now = Date.now();
-  let expiredCount = 0;
-  
-  for (const [cachedId, timestamp] of processedTweets.entries()) {
-    // Remove tweets older than the cache expiration
-    if (now - timestamp > TWEET_CACHE_EXPIRATION_MS) {
-      processedTweets.delete(cachedId);
-      expiredCount++;
-    }
-  }
-  
-  if (expiredCount > 0) {
-    console.log(`Removed ${expiredCount} expired tweets from cache. Cache size: ${processedTweets.size}`);
-  }
-  
   // Check if this specific tweet is in our cache
   if (processedTweets.has(tweetId)) {
     console.log(`Tweet ${tweetId} was already processed - skipping`);
@@ -894,22 +877,18 @@ export async function markAsProcessed(tweetId: string, skipped: boolean = false)
   }
 }
 
-// Filter for recent mentions - with updated time window
+// Filter for recent mentions - no time filtering
 export async function filterRecentMentions(mentions: any[]): Promise<any[]> {
   if (!mentions || mentions.length === 0) {
     return [];
   }
   
-  // Get current server time for logging and comparison
+  // Get current server time for logging
   const serverTime = new Date();
   console.log(`Server current time: ${serverTime.toISOString()}`);
+  console.log(`Processing all ${mentions.length} tweets regardless of age`);
   
-  // Use a larger window for tweet age to avoid missing important tweets
-  const maxAgeMinutes = 40320; // 28 days (4 weeks) instead of 7 days
-  
-  console.log(`Filtering tweets: processing tweets no older than ${maxAgeMinutes} minutes (${(maxAgeMinutes/60/24).toFixed(1)} days)`);
-  
-  // Process each tweet to extract proper timestamps
+  // Process each tweet to extract proper timestamps (for logging purposes)
   mentions.forEach(mention => {
     const tweetAny = mention as any;
     
@@ -965,24 +944,10 @@ export async function filterRecentMentions(mentions: any[]): Promise<any[]> {
     let mentionDate: Date;
     try {
       mentionDate = new Date(createdAtStr);
-      // Validate date - if invalid, use current time
       if (isNaN(mentionDate.getTime())) {
+        // If date is invalid, use current time minus 5 minutes as fallback
         console.warn(`Invalid date format: "${createdAtStr}", using current time minus 5 minutes`);
         mentionDate = new Date(serverTime.getTime() - (5 * 60 * 1000));
-      }
-      
-      // Sanity check: if date is in the far future, use current time
-      const oneMonthInFuture = new Date(serverTime.getTime() + (30 * 24 * 60 * 60 * 1000));
-      if (mentionDate > oneMonthInFuture) {
-        console.warn(`Date is too far in the future: ${mentionDate.toISOString()}, using current time`);
-        mentionDate = new Date(serverTime.getTime());
-      }
-      
-      // Sanity check: if date is before Twitter existed (2006), use current time
-      const twitterFoundingDate = new Date('2006-01-01T00:00:00Z');
-      if (mentionDate < twitterFoundingDate) {
-        console.warn(`Date is before Twitter existed: ${mentionDate.toISOString()}, using current time`);
-        mentionDate = new Date(serverTime.getTime());
       }
     } catch (e) {
       console.warn(`Error parsing date: "${createdAtStr}", using current time minus 5 minutes`, e);
@@ -992,31 +957,10 @@ export async function filterRecentMentions(mentions: any[]): Promise<any[]> {
     // Store the parsed date for use in the controller
     tweetAny._parsedCreatedAt = mentionDate;
     
-    // Log the raw input for debugging
-    console.log(`Tweet ID: ${tweetAny.id_str || tweetAny.id}, Raw date: "${createdAtStr}", Parsed: ${mentionDate.toISOString()}`);
+    // Log the tweet info but don't filter by date
+    console.log(`Tweet ID: ${tweetAny.id_str || tweetAny.id}, Date: ${mentionDate.toISOString()}`);
   });
   
-  // Filter based on relative age regardless of absolute dates
-  const filteredMentions = mentions.filter(mention => {
-    const tweetAny = mention as any;
-    const mentionDate = tweetAny._parsedCreatedAt;
-    
-    // Calculate age in minutes - use absolute difference to handle future dates
-    const ageInMinutes = Math.abs(serverTime.getTime() - mentionDate.getTime()) / (60 * 1000);
-    
-    // Keep tweets that are not too old
-    const isRecent = ageInMinutes <= maxAgeMinutes;
-    
-    if (isRecent) {
-      console.log(`Including tweet from ${mentionDate.toISOString()} - ${ageInMinutes.toFixed(1)} minutes old`);
-    } else {
-      console.log(`Skipping old tweet from ${mentionDate.toISOString()} - ${ageInMinutes.toFixed(1)} minutes old (older than ${maxAgeMinutes} minutes cutoff)`);
-    }
-    
-    return isRecent;
-  });
-  
-  console.log(`Filtered ${mentions.length} tweets down to ${filteredMentions.length} within the last ${maxAgeMinutes} minutes`);
-  
-  return filteredMentions;
+  // Return all mentions without filtering by age
+  return mentions;
 } 
