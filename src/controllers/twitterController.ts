@@ -97,14 +97,41 @@ export const processMentions = async (req: Request, res: Response): Promise<Resp
         // Access properties safely with defaults
         const id = mention.id_str || mention.id || mention.rest?.id_str || mention.rest?.id;
         const createdAt = mention.created_at || mention.createdAt || new Date().toISOString();
-        const tweetDate = new Date(createdAt);
         
-        // Double-check the tweet is within our 5-minute window
-        const fiveMinutesAgo = new Date();
-        fiveMinutesAgo.setMinutes(fiveMinutesAgo.getMinutes() - 5);
+        // Get date from the pre-processed value (from filterRecentMentions) if available
+        // This avoids duplicate date parsing logic
+        let tweetDate: Date;
+        if (mention._parsedCreatedAt instanceof Date) {
+          tweetDate = mention._parsedCreatedAt;
+          console.log(`Using pre-parsed date from twitterService: ${tweetDate.toISOString()}`);
+        } else {
+          try {
+            tweetDate = new Date(createdAt);
+            if (isNaN(tweetDate.getTime())) {
+              // If date is invalid, use current time minus 5 minutes as fallback
+              console.warn(`Invalid tweet date "${createdAt}" for tweet ${id}, using fallback`);
+              const serverTime = new Date();
+              tweetDate = new Date(serverTime.getTime() - (5 * 60 * 1000));
+            }
+          } catch (e) {
+            console.warn(`Error parsing tweet date "${createdAt}" for tweet ${id}, using fallback`, e);
+            const serverTime = new Date();
+            tweetDate = new Date(serverTime.getTime() - (5 * 60 * 1000));
+          }
+        }
         
-        if (tweetDate < fiveMinutesAgo) {
-          console.log(`Skipping tweet ${id} from ${tweetDate.toISOString()} - outside 5 minute window`);
+        // Instead of a fixed time window, use a relative age check
+        const serverTime = new Date();
+        const tweetAgeMinutes = Math.abs(serverTime.getTime() - tweetDate.getTime()) / (60 * 1000);
+        const maxAgeMinutes = 40320; // 28 days (increased from 7 days to match twitterService)
+        
+        // Log detailed time information for debugging
+        console.log(`Tweet ${id} date: ${tweetDate.toISOString()}, Age: ${tweetAgeMinutes.toFixed(1)} minutes, Server time: ${serverTime.toISOString()}`);
+        
+        // Skip if tweet is too old (but this should rarely happen since filterRecentMentions already filtered)
+        if (tweetAgeMinutes > maxAgeMinutes) {
+          console.log(`Skipping tweet ${id} - ${tweetAgeMinutes.toFixed(1)} minutes old (older than ${maxAgeMinutes} minutes cutoff)`);
+          await markAsProcessed(id, true); // Mark as skipped due to age
           continue;
         }
         
@@ -119,16 +146,36 @@ export const processMentions = async (req: Request, res: Response): Promise<Resp
           continue;
         }
         
+        // Extract text safely from various possible locations
+        const tweetText = mention.text || mention.full_text || mention.rest?.text || 
+                         mention.rest?.full_text || mention.data?.text || '';
+        
+        // Log raw tweet text for debugging
+        console.log(`Raw tweet text: "${tweetText}"`);
+        
         // Convert to the format expected by processTweetEvent
         const tweetEvent = {
           id_str: id,
-          text: mention.text || mention.full_text || mention.rest?.text || '',
+          text: tweetText,
           user: {
             id_str: mention.user?.id_str || mention.user?.id || mention.author_id || mention.userId || 'unknown',
-            screen_name: mention.user?.screen_name || mention.username || mention.author_username || 'unknown'
+            screen_name: mention.user?.screen_name || mention.username || mention.author_username || 
+                        mention.user?.username || 'unknown'
           },
           in_reply_to_status_id_str: mention.in_reply_to_status_id_str || mention.referenced_tweets?.[0]?.id
         };
+        
+        // Validate the screen_name is available
+        if (tweetEvent.user.screen_name === 'unknown') {
+          console.warn(`Could not determine username for tweet ${id}, attempting to extract from tweet text`);
+          
+          // Try to extract from tweet text if it contains a handle
+          const handleMatch = tweetText.match(/@([a-zA-Z0-9_]+)/);
+          if (handleMatch && handleMatch[1]) {
+            tweetEvent.user.screen_name = handleMatch[1];
+            console.log(`Extracted username "${tweetEvent.user.screen_name}" from tweet text`);
+          }
+        }
         
         // Check if this is a valid mention with bot username
         const botUsername = process.env.TWITTER_BOT_USERNAME || 'HederaPayBot';
