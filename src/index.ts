@@ -11,7 +11,7 @@ import elizaRoutes from './routes/elizaRoutes';
 import healthRoutes from './routes/healthRoutes';
 
 // Import services
-import { initTwitterClient } from './services/twitterClient';
+import { initTwitterClient, initTwitterReplyBot } from './services/twitterClient';
 import { startPollingService } from './services/pollingService';
 
 // Add global process error handlers
@@ -151,6 +151,8 @@ const tryInitTwitterClient = async () => {
   try {
     await initTwitterClient();
     console.log('Twitter client initialized successfully');
+    await initTwitterReplyBot();
+    console.log('Twitter reply bot initialized successfully');
     return true;
   } catch (error) {
     console.error('Failed to initialize Twitter client. Continuing without Twitter integration:', error);
