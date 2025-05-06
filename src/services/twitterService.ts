@@ -1,4 +1,4 @@
-import { getTwitterClient } from './twitterClient';
+import { getTwitterClient, getTwitterReplyBot } from './twitterClient';
 import { sendCommandToEliza, formatElizaResponseForTwitter } from './elizaService';
 import { userService } from './sqliteDbService';
 /**
@@ -615,10 +615,10 @@ export async function replyToTweet(tweetId: string, text: string): Promise<any> 
   try {
     console.log(`Posting reply to tweet ${tweetId}: ${text}`);
     
-    const twitterClient = getTwitterClient();
+    const twitterClient = getTwitterReplyBot();
     if (!twitterClient) {
-      throw new Error('Twitter client not initialized');
-      }
+      throw new Error('Twitter reply bot not initialized');
+    }
       
     // Using agent-twitter-client's sendQuoteTweet for replies
     return await twitterClient.sendQuoteTweet(text, tweetId);
