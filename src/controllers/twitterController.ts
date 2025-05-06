@@ -463,6 +463,16 @@ async function processTweetEvent(tweetEvent: TweetEvent): Promise<void> {
         response = await handleDeleteTopicCommand(parsedCommand, tweetEvent.user.screen_name);
         break;
         
+      case 'HELP_COMMAND':
+        // Provide help information with a link to the documentation
+        response = `@${tweetEvent.user.screen_name} Here are some commands you can use:
+
+💰 Account: register, check balance, transfer HBAR
+🪙 Tokens: create token, show balances, mint tokens
+📤 Transfer: send tokens, airdrop to multiple users
+Full command reference: https://hederapaybot.netlify.app/help`;
+        break;
+        
       default:
         // If it's neither a special command nor a recognized command pattern, send to Eliza
         break;
@@ -494,9 +504,7 @@ Quick Command Guide 🚀
 🆕 register account
 ✨ create/mint tokens
 🎯 airdrop tokens
-📊 view holders
-
-For details, DM me with "help"`
+For full command reference, visit: https://hederapaybot.netlify.app/help`
     );
   } catch (error) {
     console.error('Error processing tweet event:', error);
