@@ -32,6 +32,15 @@ export interface ParsedCommand {
   upperThreshold?: string;
 }
 
+// Add this where you have your imports
+enum SearchMode {
+  Top = 0,
+  Latest = 1,
+  Photos = 2,
+  Videos = 3,
+  Users = 4
+}
+
 /**
  * Parse a Twitter mention into a structured command for Eliza
  * This is the core function that translates Twitter mentions into actions
@@ -639,10 +648,11 @@ export async function getRecentMentions(): Promise<any[]> {
     // Using search method to find mentions
     // Collect all tweets from the AsyncGenerator into an array
     const searchResults = [];
-    const mentionsGenerator = twitterClient.searchTweets(`@${botUsername}`, 20);
+    const mentionsGenerator = twitterClient.searchTweets(`@${botUsername}`, 20,SearchMode.Latest);
     
     for await (const tweet of mentionsGenerator) {
       // Get the created_at date with more robust extraction
+      console.log("tweet",tweet)
       const tweetAny = tweet as any;
       
       // Try different paths to find the timestamp in the tweet object

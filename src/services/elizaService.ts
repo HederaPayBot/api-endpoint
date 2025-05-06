@@ -159,7 +159,7 @@ function generateFallbackResponse(command: string, isBalanceCommand: boolean, is
   // Default fallback response
   return [{
     user: 'HederaBot',
-    text: 'I understand you want to interact with the Hedera network. To help you better, please try one of these commands: check my balance, send tokens, or create token.'
+    text: 'I understand you want to interact with the Hedera network. Here are some commands you can use:\n\n💰 Account: register, check balance\n🪙 Tokens: create token, send tokens\n📤 Transfer: airdrop tokens to multiple users\n\nFor full command reference: https://hederapaybot.netlify.app/help'
   }];
 }
 
