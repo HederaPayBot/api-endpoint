@@ -104,7 +104,7 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({ 
     status: 'ok', 
     message: 'Hedera Twitter Pay API is running',
-    twitterIntegration: global.twitterScraper ? 'running' : 'not running',
+    twitterIntegration: global.twitterApiClient ? 'running' : 'not running',
     twitterPolling: pollingStatus.active ? 'active' : 'inactive',
     pollingInterval: pollingStatus.intervalMs ? `${pollingStatus.intervalMs / 1000} seconds` : null,
     hederaClient: hederaClient ? 'running' : 'not running',
@@ -194,7 +194,7 @@ app.listen(PORT, async () => {
     // console.log('HCS topic setup completed');
     
     // Start Twitter polling service only if Twitter client was initialized
-    if (twitterInitialized && global.twitterScraper) {
+    if (twitterInitialized && global.twitterApiClient) {
       // Get polling interval from environment or default to 60 seconds
       const pollingIntervalMs = process.env.TWITTER_POLL_INTERVAL 
         ? parseInt(process.env.TWITTER_POLL_INTERVAL) * 1000 
@@ -209,7 +209,7 @@ app.listen(PORT, async () => {
     
     console.log(`
       🚀 Hedera Twitter Pay API is running at http://localhost:${PORT}
-      🐦 Twitter integration: ${global.twitterScraper ? 'running (using agent-twitter-client)' : 'not running (disabled)'}
+      🐦 Twitter integration: ${global.twitterApiClient ? 'running (using agent-twitter-client)' : 'not running (disabled)'}
       🔗 Hedera client: running
       📋 API docs: http://localhost:${PORT}/api/docs
       🔧 Environment: ${process.env.NODE_ENV || 'development'}
