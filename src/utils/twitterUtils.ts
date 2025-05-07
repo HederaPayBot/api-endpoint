@@ -3,10 +3,12 @@ import { Tweet } from '../services/types';
 /**
  * Adapts various tweet formats to our common Tweet interface
  * @param tweet - The original tweet object
+ * @param depth - Current recursion depth to prevent infinite recursion
  * @returns A standardized Tweet object
  */
-export const adaptTweet = (tweet: any): Tweet => {
-  if (!tweet) return null;
+export const adaptTweet = (tweet: any, depth: number = 0): Tweet => {
+  // Return null for null tweets or if we've gone too deep
+  if (!tweet || depth > 3) return null;
   
   // Create a base tweet object with our structure
   const adapted: Tweet = {
@@ -45,19 +47,32 @@ export const adaptTweet = (tweet: any): Tweet => {
   if (tweet.likeCount) adapted.likeCount = tweet.likeCount;
   if (tweet.viewCount) adapted.viewCount = tweet.viewCount;
   
-  // Handle inReplyToStatus if present
-  if (tweet.inReplyToStatus) {
-    adapted.inReplyToStatus = adaptTweet(tweet.inReplyToStatus);
-  }
-  
-  // Handle thread if present
-  if (tweet.thread && Array.isArray(tweet.thread)) {
-    adapted.thread = tweet.thread.map(t => adaptTweet(t));
-  }
-  
-  // Handle quoted status if present
-  if (tweet.quotedStatus) {
-    adapted.quotedStatus = adaptTweet(tweet.quotedStatus);
+  // Only process nested tweets if we're not too deep
+  if (depth < 3) {
+    // Handle inReplyToStatus if present
+    if (tweet.inReplyToStatus) {
+      // Make sure we're not creating a circular reference
+      if (tweet.inReplyToStatus.id !== tweet.id) {
+        adapted.inReplyToStatus = adaptTweet(tweet.inReplyToStatus, depth + 1);
+      }
+    }
+    
+    // Handle thread if present
+    if (tweet.thread && Array.isArray(tweet.thread)) {
+      adapted.thread = tweet.thread.map(t => {
+        // Skip circular references in thread
+        if (t.id === tweet.id) return null;
+        return adaptTweet(t, depth + 1);
+      }).filter(Boolean); // Remove null entries
+    }
+    
+    // Handle quoted status if present
+    if (tweet.quotedStatus) {
+      // Make sure we're not creating a circular reference
+      if (tweet.quotedStatus.id !== tweet.id) {
+        adapted.quotedStatus = adaptTweet(tweet.quotedStatus, depth + 1);
+      }
+    }
   }
   
   return adapted;
@@ -71,42 +86,64 @@ export const adaptTweet = (tweet: any): Tweet => {
 export const breakCircularReferences = (tweet: any): Tweet => {
   if (!tweet) return null;
   
-  // First adapt the tweet to our format
-  const adapted = adaptTweet(tweet);
+  // Just work with the tweet directly, don't call adaptTweet again
+  // which could cause infinite recursion
+  const safeClone: Tweet = { 
+    id: tweet.id || tweet.id_str,
+    text: tweet.text || tweet.full_text || '',
+    username: tweet.username || (tweet.user ? tweet.user.screen_name : null),
+    displayName: tweet.displayName || (tweet.user ? tweet.user.name : null),
+    userId: tweet.userId || tweet.user_id_str || (tweet.user ? tweet.user.id_str : null),
+    timeParsed: tweet.timeParsed || (tweet.created_at ? new Date(tweet.created_at) : null),
+    inReplyToStatusId: tweet.inReplyToStatusId || tweet.in_reply_to_status_id_str,
+    conversationId: tweet.conversationId || tweet.conversation_id_str,
+  };
   
-  const safeClone: Tweet = { ...adapted };
+  // Copy non-nested properties
+  if (tweet.urls) safeClone.urls = tweet.urls;
+  if (tweet.hashtags) safeClone.hashtags = tweet.hashtags;
+  if (tweet.mentions) safeClone.mentions = tweet.mentions;
+  if (tweet.photos) safeClone.photos = tweet.photos;
+  if (tweet.videos) safeClone.videos = tweet.videos;
+  if (tweet.replyCount) safeClone.replyCount = tweet.replyCount;
+  if (tweet.retweetCount) safeClone.retweetCount = tweet.retweetCount;
+  if (tweet.likeCount) safeClone.likeCount = tweet.likeCount;
+  if (tweet.viewCount) safeClone.viewCount = tweet.viewCount;
   
   // Handle inReplyToStatus to avoid circular references
-  if (safeClone.inReplyToStatus) {
+  if (tweet.inReplyToStatus) {
+    // Create a minimal reference instead of the full object
     safeClone.inReplyToStatus = {
-      id: safeClone.inReplyToStatus.id,
-      text: safeClone.inReplyToStatus.text,
-      username: safeClone.inReplyToStatus.username,
+      id: tweet.inReplyToStatus.id || tweet.inReplyToStatus.id_str,
+      text: tweet.inReplyToStatus.text || tweet.inReplyToStatus.full_text || '',
+      username: tweet.inReplyToStatus.username || 
+                (tweet.inReplyToStatus.user ? tweet.inReplyToStatus.user.screen_name : null),
     } as Tweet;
   }
   
-  // Process thread tweets if they exist
-  if (safeClone.thread && Array.isArray(safeClone.thread)) {
-    safeClone.thread = safeClone.thread.map(threadTweet => {
-      const safeThreadTweet = { ...threadTweet };
-
-      if (safeThreadTweet.inReplyToStatus) {
-        if (safeThreadTweet.inReplyToStatus.id === adapted.id) {
-          // If this thread tweet is referring to the parent tweet, simplify the reference
-          safeThreadTweet.inReplyToStatus = {
-            id: safeThreadTweet.inReplyToStatus.id,
-            text: safeThreadTweet.inReplyToStatus.text,
-            username: safeThreadTweet.inReplyToStatus.username,
-          } as Tweet;
-        } else {
-          // Process other reply references recursively
-          safeThreadTweet.inReplyToStatus = breakCircularReferences(
-            safeThreadTweet.inReplyToStatus,
-          );
-        }
-      }
-      return safeThreadTweet;
+  // Process thread tweets if they exist, but keep them minimal
+  if (tweet.thread && Array.isArray(tweet.thread)) {
+    safeClone.thread = tweet.thread.map(threadTweet => {
+      return {
+        id: threadTweet.id || threadTweet.id_str,
+        text: threadTweet.text || threadTweet.full_text || '',
+        username: threadTweet.username || 
+                 (threadTweet.user ? threadTweet.user.screen_name : null),
+        timeParsed: threadTweet.timeParsed || 
+                   (threadTweet.created_at ? new Date(threadTweet.created_at) : null),
+        inReplyToStatusId: threadTweet.inReplyToStatusId || threadTweet.in_reply_to_status_id_str,
+      } as Tweet;
     });
+  }
+  
+  // Handle quoted status similar to inReplyToStatus
+  if (tweet.quotedStatus) {
+    safeClone.quotedStatus = {
+      id: tweet.quotedStatus.id || tweet.quotedStatus.id_str,
+      text: tweet.quotedStatus.text || tweet.quotedStatus.full_text || '',
+      username: tweet.quotedStatus.username || 
+               (tweet.quotedStatus.user ? tweet.quotedStatus.user.screen_name : null),
+    } as Tweet;
   }
   
   return safeClone;

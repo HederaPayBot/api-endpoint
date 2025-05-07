@@ -46,7 +46,7 @@ export interface TwitterApi {
   scraper: any;
   username: string;
   userId: string;
-  getMyUnrepliedToMentions: (maxResults: number, maxThreadDepth?: number, ignoreConversationIds?: string[], sinceId?: string) => Promise<Tweet[]>;
+  getMyUnrepliedToMentions: (maxResults: number, maxThreadDepth?: number, ignoreConversationIds?: string[], sinceId?: string, botUsername?: string) => Promise<Tweet[]>;
   getFollowingRecentTweets: (maxResults?: number, randomNumberOfUsers?: number) => Promise<Tweet[]>;
   isLoggedIn: () => Promise<boolean>;
   getProfile: (username: string) => Promise<any>;

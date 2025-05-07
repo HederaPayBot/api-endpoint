@@ -139,8 +139,13 @@ const getMyUnrepliedToMentions = async (
   ignoreConversationIds: string[] = [],
   maxResults: number = 50,
   sinceId?: string,
+  botUsername?: string,
 ): Promise<Tweet[]> => {
-  logger.info(`Getting mentions for @${username}`, { 
+  // Use botUsername for search query if provided
+  logger.info(`Bot username: ${botUsername}`);
+  const queryUsername = botUsername || "HederaPayBot";
+  
+  logger.info(`Getting mentions for @${queryUsername}`, { 
     maxResults, 
     sinceId: sinceId || 'none',
     maxThreadDepth,
@@ -152,7 +157,8 @@ const getMyUnrepliedToMentions = async (
     ? ignoreConversationIds.map(id => ` -conversation_id:${id}`).join('') 
     : '';
   
-  const query = `@${username} -from:${username}${queryConversationIds}`;
+  // Use botUsername for the search query, not the authenticated username
+  const query = `@${queryUsername} -from:${username}${queryConversationIds}`;
   const mentionIterator = scraper.searchTweets(query, maxResults, SearchMode.Latest);
 
   // Build a set of "already replied to" tweet IDs in one query
@@ -342,8 +348,8 @@ export const createTwitterApi = async (
     username: username,
     userId: userId,
     
-    getMyUnrepliedToMentions: (maxResults: number, maxThreadDepth: number = 5, ignoreConversationIds: string[] = [], sinceId?: string) =>
-      getMyUnrepliedToMentions(scraper, username, maxThreadDepth, ignoreConversationIds, maxResults, sinceId),
+    getMyUnrepliedToMentions: (maxResults: number, maxThreadDepth: number = 5, ignoreConversationIds: string[] = [], sinceId?: string, botUsername?: string) =>
+      getMyUnrepliedToMentions(scraper, username, maxThreadDepth, ignoreConversationIds, maxResults, sinceId, botUsername),
 
     getFollowingRecentTweets: (maxResults: number = 100, randomNumberOfUsers: number = 10) =>
       getFollowingRecentTweets(scraper, username, maxResults, randomNumberOfUsers),
