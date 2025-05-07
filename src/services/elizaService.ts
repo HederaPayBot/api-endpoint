@@ -175,10 +175,52 @@ export function formatElizaResponseForTwitter(elizaResponse: any[]): string {
     return 'Sorry, I couldn\'t process your request at this time.';
   }
   
-  // Extract text from each message
+  // Extract text from each message and handle errors properly
   const formattedMessages = elizaResponse
-    .filter(item => item && item.text) // Only include items with text
-    .map(item => item.text)
+    .filter(item => item) // Only include valid items
+    .map(item => {
+      // Check if this is an error message - more comprehensive check
+      if (
+        // Direct error content
+        item.content?.error || 
+        // Error in text property
+        (item.text && (
+          item.text.includes('Error:') || 
+          item.text.includes('error:') ||
+          item.text.includes('ERROR:') ||
+          item.text.includes('StatusError') ||
+          item.text.includes('Transaction failed:') ||
+          item.text.includes('failed:') ||
+          item.text.includes('Exception:') ||
+          item.text.includes('Invalid:') ||
+          item.text.includes('Could not') ||
+          item.text.includes('not found') ||
+          item.text.includes('cannot be')
+        )) ||
+        // Error as action failure
+        item.action?.includes('FAILED') ||
+        // Direct error property
+        item.error ||
+        // Status property
+        (item.status && item.status !== 'SUCCESS' && item.status !== 'OK')
+      ) {
+        // Build error message from all available information
+        const errorText = item.text || 
+                         item.content?.error || 
+                         item.error || 
+                         item.status || 
+                         JSON.stringify(item.content) || 
+                         'Unknown error';
+        
+        // Parse the error and return a user-friendly message
+        const errorType = getErrorType(errorText);
+        return getUserFriendlyErrorMessage(errorType);
+      }
+      
+      // Regular message
+      return item.text || '';
+    })
+    .filter(text => text.trim() !== '') // Remove empty messages
     .join('\n\n'); // Join with newlines between responses
   
   // Truncate if too long for Twitter (280 chars max)
@@ -187,4 +229,104 @@ export function formatElizaResponseForTwitter(elizaResponse: any[]): string {
   }
   
   return formattedMessages;
+}
+
+/**
+ * Extract the error type from an error message
+ * @param errorMessage - The raw error message
+ * @returns The error type
+ */
+function getErrorType(errorMessage: string): string {
+  // Extract status from error message
+  if (errorMessage.includes('INVALID_TOPIC_ID')) {
+    return 'INVALID_TOPIC_ID';
+  } else if (errorMessage.includes('UNAUTHORIZED')) {
+    return 'UNAUTHORIZED';
+  } else if (errorMessage.includes('INSUFFICIENT_BALANCE')) {
+    return 'INSUFFICIENT_BALANCE';
+  } else if (errorMessage.includes('INSUFFICIENT_TX_FEE')) {
+    return 'INSUFFICIENT_TX_FEE';
+  } else if (errorMessage.includes('INVALID_SIGNATURE')) {
+    return 'INVALID_SIGNATURE';
+  } else if (errorMessage.includes('ACCOUNT_NOT_FOUND')) {
+    return 'ACCOUNT_NOT_FOUND';
+  } else if (errorMessage.includes('TOKEN_NOT_FOUND')) {
+    return 'TOKEN_NOT_FOUND';
+  } else if (errorMessage.includes('TOPIC_NOT_FOUND')) {
+    return 'TOPIC_NOT_FOUND';
+  } else if (errorMessage.includes('TOKEN_NOT_ASSOCIATED_TO_ACCOUNT')) {
+    return 'TOKEN_NOT_ASSOCIATED';
+  } else if (errorMessage.includes('TOKEN_ALREADY_ASSOCIATED_TO_ACCOUNT')) {
+    return 'TOKEN_ALREADY_ASSOCIATED';
+  } else if (errorMessage.includes('INVALID_TOKEN_ID')) {
+    return 'INVALID_TOKEN_ID';
+  } else if (errorMessage.includes('INVALID_ACCOUNT_ID')) {
+    return 'INVALID_ACCOUNT_ID';
+  } else if (errorMessage.includes('TOKEN_HAS_NO_SUPPLY_KEY')) {
+    return 'TOKEN_HAS_NO_SUPPLY_KEY';
+  } else if (errorMessage.includes('KEY_REQUIRED')) {
+    return 'KEY_REQUIRED';
+  } else if (errorMessage.includes('INVALID_SUBMIT_KEY')) {
+    return 'INVALID_SUBMIT_KEY';
+  } else if (errorMessage.includes('INSUFFICIENT_TOKEN_BALANCE')) {
+    return 'INSUFFICIENT_TOKEN_BALANCE';
+  } else if (errorMessage.includes('INVALID_SOLIDITY_ADDRESS')) {
+    return 'INVALID_SOLIDITY_ADDRESS';
+  } else if (errorMessage.includes('MISSING_TOKEN_NAME')) {
+    return 'MISSING_TOKEN_NAME';
+  } else if (errorMessage.includes('MISSING_TOKEN_SYMBOL')) {
+    return 'MISSING_TOKEN_SYMBOL';
+  } else {
+    return 'UNKNOWN_ERROR';
+  }
+}
+
+/**
+ * Get a user-friendly error message based on the error type
+ * @param errorType - The type of error
+ * @returns A user-friendly error message
+ */
+function getUserFriendlyErrorMessage(errorType: string): string {
+  switch (errorType) {
+    case 'INVALID_TOPIC_ID':
+      return 'The topic ID you provided doesn\'t exist. Please check the ID and try again.';
+    case 'UNAUTHORIZED':
+      return 'You don\'t have permission to perform this action. You might not have the right keys.';
+    case 'INSUFFICIENT_BALANCE':
+      return 'You don\'t have enough HBAR balance to complete this transaction.';
+    case 'INSUFFICIENT_TX_FEE':
+      return 'The transaction fee is insufficient. Please try again with a higher fee.';
+    case 'INVALID_SIGNATURE':
+      return 'There was an authentication issue with your account.';
+    case 'ACCOUNT_NOT_FOUND':
+      return 'The account you specified couldn\'t be found. Please verify the account ID.';
+    case 'TOKEN_NOT_FOUND':
+      return 'The token you specified couldn\'t be found. Please verify the token ID.';
+    case 'TOPIC_NOT_FOUND':
+      return 'The topic you specified couldn\'t be found. Please verify the topic ID.';
+    case 'TOKEN_NOT_ASSOCIATED':
+      return 'The token is not associated with this account. Please associate the token first before performing this operation.';
+    case 'TOKEN_ALREADY_ASSOCIATED':
+      return 'This token is already associated with your account.';
+    case 'INVALID_TOKEN_ID':
+      return 'The token ID format is invalid. Please check and try again.';
+    case 'INVALID_ACCOUNT_ID':
+      return 'The account ID format is invalid. Please check and try again.';
+    case 'TOKEN_HAS_NO_SUPPLY_KEY':
+      return 'This token doesn\'t have a supply key, so new tokens can\'t be minted.';
+    case 'KEY_REQUIRED':
+      return 'This operation requires a specific key that your account doesn\'t have.';
+    case 'INVALID_SUBMIT_KEY':
+      return 'You don\'t have permission to submit messages to this topic.';
+    case 'INSUFFICIENT_TOKEN_BALANCE':
+      return 'You don\'t have enough tokens to complete this transaction.';
+    case 'INVALID_SOLIDITY_ADDRESS':
+      return 'The Ethereum address format is invalid. Please use a Hedera account ID instead.';
+    case 'MISSING_TOKEN_NAME':
+      return 'A token name is required to create a token.';
+    case 'MISSING_TOKEN_SYMBOL':
+      return 'A token symbol is required to create a token.';
+    default:
+      return 'Sorry, there was an error processing your request. Please try again later.';
+  }
 } 

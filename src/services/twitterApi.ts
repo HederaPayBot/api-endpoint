@@ -158,7 +158,8 @@ const getMyUnrepliedToMentions = async (
     : '';
   
   // Use botUsername for the search query, not the authenticated username
-  const query = `@${queryUsername} -from:${username}${queryConversationIds}`;
+  const query = `@${queryUsername} ${queryConversationIds}`;
+  console.log(`Query: ${query}`);
   const mentionIterator = scraper.searchTweets(query, maxResults, SearchMode.Latest);
 
   // Build a set of "already replied to" tweet IDs in one query
@@ -171,7 +172,7 @@ const getMyUnrepliedToMentions = async (
   for await (const tweet of mentionIterator) {
     // Skip tweets without an ID
     if (!tweet.id) continue;
-    
+    logger.info(`Tweet: ${JSON.stringify(tweet)}`);
     // Skip tweets from ignored conversations
     if (tweet.conversationId && ignoreConversationIds.includes(tweet.conversationId)) continue;
 

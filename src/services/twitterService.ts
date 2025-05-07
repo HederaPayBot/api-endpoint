@@ -657,10 +657,12 @@ export async function getRecentMentions(): Promise<Tweet[]> {
         maxResults, 
         maxThreadDepth,
         ignoreConversationIds,
-        sinceId
+        sinceId,
+        botUsername
       );
       
       console.log(`Found ${mentions.length} unreplied mentions for @${botUsername} using getMyUnrepliedToMentions`);
+      console.log(`Raw mentions from Twitter API: ${JSON.stringify(mentions.map(m => ({id: m.id, text: m.text})))}`);
       return mentions;
     } 
     // Fallback to searchTweets if getMyUnrepliedToMentions is not available
@@ -672,6 +674,7 @@ export async function getRecentMentions(): Promise<Tweet[]> {
       if (sinceId) {
         query += ` since_id:${sinceId}`;
       }
+      console.log(`Query: ${query}`);
       
       const result = await twitterClient.searchTweets(query, 30);
       
