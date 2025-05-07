@@ -622,213 +622,6 @@ export async function replyToTweet(tweetId: string, text: string): Promise<any> 
   }
 }
 
-
-/**
- * Get recent mentions of the bot account
- * @returns Array of mention tweets
- */
-export async function getRecentMentions(): Promise<Tweet[]> {
-  try {
-    const twitterClient = getTwitterClient();
-    if (!twitterClient) {
-      throw new Error('Twitter client not initialized');
-    }
-    
-    const botUsername = process.env.TWITTER_BOT_USERNAME || 'HederaPayBot';
-    console.log(`Fetching recent tweets mentioning @${botUsername}`);
-    
-    // Get the last processed tweet ID to use as a starting point
-    const sinceId = await getLastProcessedId();
-    if (sinceId) {
-      console.log(`Using sinceId: ${sinceId} to only fetch newer tweets`);
-    }
-    
-    // Preferred method: getMyUnrepliedToMentions
-    if (typeof twitterClient.getMyUnrepliedToMentions === 'function') {
-      // Use the getMyUnrepliedToMentions method which is specifically designed for this purpose
-      const maxResults = 30; // Get up to 30 most recent mentions
-      const maxThreadDepth = 5; // Include up to 5 tweets in each conversation thread
-      
-      // Get conversation IDs to ignore
-      const ignoreConversationIds: string[] = [];
-      
-      // getMyUnrepliedToMentions has built-in filtering for tweets we've already replied to
-      const mentions = await twitterClient.getMyUnrepliedToMentions(
-        maxResults, 
-        maxThreadDepth,
-        ignoreConversationIds,
-        sinceId,
-        botUsername
-      );
-      
-      console.log(`Found ${mentions.length} unreplied mentions for @${botUsername} using getMyUnrepliedToMentions`);
-      console.log(`Raw mentions from Twitter API: ${JSON.stringify(mentions.map(m => ({id: m.id, text: m.text})))}`);
-      return mentions;
-    } 
-    // Fallback to searchTweets if getMyUnrepliedToMentions is not available
-    else if (typeof twitterClient.searchTweets === 'function') {
-      console.log("Using searchTweets as fallback for getting mentions");
-      
-      // Build query with optional since_id parameter
-      let query = `@${botUsername}`;
-      if (sinceId) {
-        query += ` since_id:${sinceId}`;
-      }
-      console.log(`Query: ${query}`);
-      
-      const result = await twitterClient.searchTweets(query, 30);
-      
-      // Handle both possible return types from searchTweets
-      let tweets: Tweet[] = [];
-      
-      // If result is an Array (Promise<Tweet[]> resolved)
-      if (Array.isArray(result)) {
-        tweets = result;
-      } 
-      // If result is an AsyncGenerator
-      else {
-        // Collect tweets from the AsyncGenerator
-        for await (const tweet of result) {
-          tweets.push(tweet as Tweet);
-          if (tweets.length >= 30) break; // Limit to 30 tweets
-        }
-      }
-      
-      console.log(`Found ${tweets.length} tweets mentioning @${botUsername} using searchTweets`);
-      
-      // With searchTweets, we also need to filter for tweets we have already replied to
-      if (typeof twitterClient.getMyRepliedToIds === 'function') {
-        try {
-          const repliedToIds = await twitterClient.getMyRepliedToIds();
-          console.log(`Filtering out ${repliedToIds.length} tweets we have already replied to`);
-          tweets = tweets.filter(tweet => {
-            const tweetId = tweet.id || tweet.id_str;
-            return tweetId && !repliedToIds.includes(tweetId);
-          });
-          console.log(`After filtering, ${tweets.length} tweets remaining`);
-        } catch (error) {
-          console.error('Error filtering out replied tweets:', error);
-        }
-      }
-      
-      return tweets;
-    } 
-    // No suitable method available
-    else {
-      console.warn("No suitable method available to get mentions");
-      return [];
-    }
-  } catch (error) {
-    console.error('Error getting recent mentions:', error);
-    return [];
-  }
-}
-
-/**
- * Check if text is a balance-related query
- * This function provides better detection for balance requests
- * 
- * @param text - Text to check for balance query
- * @returns Object indicating if it's a balance query and what type
- */
-export function isBalanceQuery(text: string): { isBalanceQuery: boolean; type: 'ALL' | 'HBAR' | 'TOKEN' | 'NONE'; tokenId?: string } {
-  // Remove @mentions and clean up text
-  const cleanText = text.replace(/@\w+/g, '').trim().toLowerCase();
-  
-  // Common balance query patterns
-  const generalBalancePatterns = [
-    /(?:what(?:'?s| is))?(?:\s+my|\s+the)?\s+(?:token\s+)?balance(?:s)?/i,
-    /show\s+(?:me\s+)?(?:my\s+)?(?:token\s+)?balance(?:s)?/i,
-    /check\s+(?:my\s+)?(?:token\s+)?balance(?:s)?/i,
-    /display\s+(?:my\s+)?(?:token\s+)?balance(?:s)?/i,
-    /get\s+(?:my\s+)?(?:token\s+)?balance(?:s)?/i,
-    /^balance(?:s)?$/i,
-    /^my\s+balance(?:s)?$/i,
-    /^token\s+balance(?:s)?$/i
-  ];
-  
-  // HBAR specific balance patterns
-  const hbarBalancePatterns = [
-    /(?:what(?:'?s| is))?(?:\s+my|\s+the)?\s+hbar\s+balance/i,
-    /show\s+(?:me\s+)?(?:my\s+)?hbar\s+balance/i,
-    /check\s+(?:my\s+)?hbar\s+balance/i,
-    /display\s+(?:my\s+)?hbar\s+balance/i,
-    /get\s+(?:my\s+)?hbar\s+balance/i,
-    /^hbar\s+balance$/i,
-    /^my\s+hbar\s+balance$/i
-  ];
-  
-  // Specific token balance patterns
-  const specificTokenPattern = /(?:what(?:'?s| is))?(?:\s+my|\s+the)?\s+balance\s+(?:for|of)\s+token\s+([0-9.]+)/i;
-  const tokenIdMatch = cleanText.match(specificTokenPattern);
-  
-  // Check patterns
-  const isGeneralBalance = generalBalancePatterns.some(pattern => pattern.test(cleanText));
-  const isHbarBalance = hbarBalancePatterns.some(pattern => pattern.test(cleanText));
-  const isSpecificToken = tokenIdMatch !== null;
-  
-  // Determine the type of balance query
-  if (isHbarBalance) {
-    return { isBalanceQuery: true, type: 'HBAR' };
-  } else if (isSpecificToken && tokenIdMatch) {
-    return { isBalanceQuery: true, type: 'TOKEN', tokenId: tokenIdMatch[1] };
-  } else if (isGeneralBalance) {
-    return { isBalanceQuery: true, type: 'ALL' };
-  }
-  
-  return { isBalanceQuery: false, type: 'NONE' };
-}
-
-/**
- * Generate appropriate balance response based on query type
- * 
- * @param twitterUsername - Twitter username 
- * @param queryType - Type of balance query
- * @param tokenId - Optional token ID for specific token balance
- * @returns Formatted balance response
- */
-export async function generateBalanceResponse(
-  twitterUsername: string, 
-  queryType: 'ALL' | 'HBAR' | 'TOKEN',
-  tokenId?: string
-): Promise<string> {
-  // Import the Eliza service
-
-  
-  try {
-    let balanceCommand = '';
-    
-    switch (queryType) {
-      case 'ALL':
-        balanceCommand = 'Show me all my token balances';
-        break;
-      case 'HBAR':
-        balanceCommand = "What's my HBAR balance?";
-        break;
-      case 'TOKEN':
-        balanceCommand = `What's my balance for token ${tokenId}?`;
-        break;
-    }
-  
-    const userInfo=await userService.getUserByTwitterUsername(twitterUsername);
-    const userId = userInfo?.twitter_id;
-    const userName = userInfo?.twitter_username;
-    // Get balance response from Eliza with all required parameters: command, userId, userName
-    const response = await sendCommandToEliza(balanceCommand, userId, userName);
-    
-    // Format the response for Twitter if needed
-    if (Array.isArray(response)) {
-      return formatElizaResponseForTwitter(response);
-    }
-    
-    // If response is already a string, return it directly
-    return typeof response === 'string' ? response : JSON.stringify(response);
-  } catch (error) {
-    console.error('Error generating balance response:', error);
-    return "I'm sorry, I couldn't retrieve your balance information at this time.";
-  }
-}
-
 // Simplified approach to storing processed tweets
 // Use a Map with tweet ID as key and processed time as value
 const processedTweets = new Map<string, number>();
@@ -837,9 +630,16 @@ const MAX_PROCESSED_TWEETS = 10000;
 let repliedToIdsCache: string[] = [];
 let repliedToIdsCacheTime: number = 0;
 const REPLIED_CACHE_TTL = 5 * 60 * 1000; // 5 minutes in milliseconds
-
 // Keep track of the latest tweet ID we've seen
 let lastProcessedTweetId: string = '';
+// Flag to skip sinceId for the next fetch (used to recover from no results situation)
+let skipSinceIdNextFetch: boolean = false;
+// Counter for consecutive empty fetches (better than using global)
+let consecutiveEmptyFetches: number = 0;
+// Last time we did a full refresh without sinceId
+let lastFullRefreshTime: number = Date.now();
+// Do a full refresh every 6 hours
+const FULL_REFRESH_INTERVAL = 6 * 60 * 60 * 1000;
 
 /**
  * Get the ID of the last processed tweet
@@ -847,6 +647,20 @@ let lastProcessedTweetId: string = '';
  * @returns The ID of the last processed tweet
  */
 export async function getLastProcessedId(): Promise<string | undefined> {
+  // Check if we need to do a periodic full refresh
+  const timeSinceLastFullRefresh = Date.now() - lastFullRefreshTime;
+  if (timeSinceLastFullRefresh > FULL_REFRESH_INTERVAL) {
+    console.log(`It's been ${Math.round(timeSinceLastFullRefresh / (60 * 60 * 1000))} hours since the last full refresh. Skipping sinceId for this fetch.`);
+    lastFullRefreshTime = Date.now();
+    // The next fetch after this will use sinceId again if appropriate
+    return undefined;
+  }
+
+  if (skipSinceIdNextFetch) {
+    console.log('Skipping sinceId for this fetch to recover from possible stalled state');
+    skipSinceIdNextFetch = false;
+    return undefined;
+  }
   return lastProcessedTweetId || undefined;
 }
 
@@ -1029,4 +843,289 @@ export async function filterRecentMentions(mentions: Tweet[]): Promise<Tweet[]> 
   
   console.log(`After filtering, ${filteredMentions.length} tweets will be processed`);
   return filteredMentions;
+}
+
+/**
+ * Get recent mentions of the bot account
+ * @returns Array of mention tweets
+ */
+export async function getRecentMentions(): Promise<Tweet[]> {
+  try {
+    const twitterClient = getTwitterClient();
+    if (!twitterClient) {
+      throw new Error('Twitter client not initialized');
+    }
+    
+    const botUsername = process.env.TWITTER_BOT_USERNAME || 'HederaPayBot';
+    console.log(`Fetching recent tweets mentioning @${botUsername}`);
+    
+    // Get the last processed tweet ID to use as a starting point
+    const sinceId = await getLastProcessedId();
+    if (sinceId) {
+      console.log(`Using sinceId: ${sinceId} to only fetch newer tweets`);
+    } else {
+      console.log('No sinceId specified, will fetch most recent tweets (full refresh)');
+    }
+    
+    // Preferred method: getMyUnrepliedToMentions
+    if (typeof twitterClient.getMyUnrepliedToMentions === 'function') {
+      // Use the getMyUnrepliedToMentions method which is specifically designed for this purpose
+      const maxResults = 30; // Get up to 30 most recent mentions
+      const maxThreadDepth = 5; // Include up to 5 tweets in each conversation thread
+      
+      // Get conversation IDs to ignore
+      const ignoreConversationIds: string[] = [];
+      
+      // getMyUnrepliedToMentions has built-in filtering for tweets we've already replied to
+      const mentions = await twitterClient.getMyUnrepliedToMentions(
+        maxResults, 
+        maxThreadDepth,
+        ignoreConversationIds,
+        sinceId,
+        botUsername
+      );
+      
+      console.log(`Found ${mentions.length} unreplied mentions for @${botUsername} using getMyUnrepliedToMentions`);
+      console.log(`Raw mentions from Twitter API: ${JSON.stringify(mentions.map(m => ({id: m.id, username: m.username, text: m.text})))}`);
+      
+      // Record the max tweet ID we've seen to help ensure we don't miss any tweets
+      if (mentions.length > 0) {
+        const tweetIds = mentions.map(m => m.id || m.id_str || '').filter(Boolean);
+        if (tweetIds.length > 0) {
+          const maxId = tweetIds.reduce((a, b) => a > b ? a : b);
+          console.log(`Highest tweet ID in this batch: ${maxId}`);
+          
+          // Update the last processed ID to ensure we get all newer tweets next time
+          await updateLastProcessedId(maxId);
+        }
+      }
+      
+      // If we get 0 results with a sinceId, try again without sinceId on the next call
+      // This helps recover from situations where we might be stuck
+      if (mentions.length === 0 && sinceId) {
+        consecutiveEmptyFetches++;
+        console.log(`No mentions found. Consecutive empty fetches: ${consecutiveEmptyFetches}`);
+        
+        // If we've had multiple empty fetches in a row, skip sinceId on the next fetch
+        if (consecutiveEmptyFetches >= 3) {
+          console.warn(`No mentions found for ${consecutiveEmptyFetches} consecutive fetches. Will skip sinceId on next fetch.`);
+          skipSinceIdNextFetch = true;
+          consecutiveEmptyFetches = 0;
+        }
+      } else {
+        // Reset counter on successful fetch
+        consecutiveEmptyFetches = 0;
+      }
+      
+      return mentions;
+    } 
+    // Fallback to searchTweets if getMyUnrepliedToMentions is not available
+    else if (typeof twitterClient.searchTweets === 'function') {
+      console.log("Using searchTweets as fallback for getting mentions");
+      
+      // Build query with optional since_id parameter
+      let query = `@${botUsername}`;
+      if (sinceId) {
+        query += ` since_id:${sinceId}`;
+      }
+      console.log(`Query: ${query}`);
+      
+      const result = await twitterClient.searchTweets(query, 30);
+      
+      // Handle both possible return types from searchTweets
+      let tweets: Tweet[] = [];
+      
+      // If result is an Array (Promise<Tweet[]> resolved)
+      if (Array.isArray(result)) {
+        tweets = result;
+      } 
+      // If result is an AsyncGenerator
+      else {
+        // Collect tweets from the AsyncGenerator
+        for await (const tweet of result) {
+          tweets.push(tweet as Tweet);
+          if (tweets.length >= 30) break; // Limit to 30 tweets
+        }
+      }
+      
+      console.log(`Found ${tweets.length} tweets mentioning @${botUsername} using searchTweets`);
+      console.log(`Raw tweets from search API: ${JSON.stringify(tweets.map(t => ({id: t.id || t.id_str, username: t.username || t.user?.screen_name, text: t.text || t.full_text})))}`);
+      
+      // Record the max tweet ID we've seen
+      if (tweets.length > 0) {
+        const tweetIds = tweets.map(t => t.id || t.id_str || '').filter(Boolean);
+        if (tweetIds.length > 0) {
+          const maxId = tweetIds.reduce((a, b) => a > b ? a : b);
+          console.log(`Highest tweet ID in this batch: ${maxId}`);
+          
+          // Update the last processed ID to ensure we get all newer tweets next time
+          await updateLastProcessedId(maxId);
+        }
+      }
+      
+      // If we get 0 results with a sinceId, consider skipping it next time
+      if (tweets.length === 0 && sinceId) {
+        consecutiveEmptyFetches++;
+        console.log(`No tweets found. Consecutive empty fetches: ${consecutiveEmptyFetches}`);
+        
+        // If we've had multiple empty fetches in a row, skip sinceId on the next fetch
+        if (consecutiveEmptyFetches >= 3) {
+          console.warn(`No tweets found for ${consecutiveEmptyFetches} consecutive fetches. Will skip sinceId on next fetch.`);
+          skipSinceIdNextFetch = true;
+          consecutiveEmptyFetches = 0;
+        }
+      } else {
+        // Reset counter on successful fetch
+        consecutiveEmptyFetches = 0;
+      }
+      
+      // With searchTweets, we also need to filter for tweets we have already replied to
+      if (typeof twitterClient.getMyRepliedToIds === 'function') {
+        try {
+          const repliedToIds = await twitterClient.getMyRepliedToIds();
+          console.log(`Filtering out ${repliedToIds.length} tweets we have already replied to`);
+          tweets = tweets.filter(tweet => {
+            const tweetId = tweet.id || tweet.id_str;
+            return tweetId && !repliedToIds.includes(tweetId);
+          });
+          console.log(`After filtering, ${tweets.length} tweets remaining`);
+        } catch (error) {
+          console.error('Error filtering out replied tweets:', error);
+        }
+      }
+      
+      return tweets;
+    } 
+    // No suitable method available
+    else {
+      console.warn("No suitable method available to get mentions");
+      return [];
+    }
+  } catch (error) {
+    console.error('Error getting recent mentions:', error);
+    
+    // If we encounter an error, skip sinceId on the next fetch to recover
+    skipSinceIdNextFetch = true;
+    return [];
+  }
+}
+
+/**
+ * Check if text is a balance-related query
+ * This function provides better detection for balance requests
+ * 
+ * @param text - Text to check for balance query
+ * @returns Object indicating if it's a balance query and what type
+ */
+export function isBalanceQuery(text: string): { isBalanceQuery: boolean; type: 'ALL' | 'HBAR' | 'TOKEN' | 'NONE'; tokenId?: string } {
+  // Remove @mentions and clean up text
+  const cleanText = text.replace(/@\w+/g, '').trim().toLowerCase();
+  
+  // Common balance query patterns
+  const generalBalancePatterns = [
+    /(?:what(?:'?s| is))?(?:\s+my|\s+the)?\s+(?:token\s+)?balance(?:s)?/i,
+    /show\s+(?:me\s+)?(?:my\s+)?(?:token\s+)?balance(?:s)?/i,
+    /check\s+(?:my\s+)?(?:token\s+)?balance(?:s)?/i,
+    /display\s+(?:my\s+)?(?:token\s+)?balance(?:s)?/i,
+    /get\s+(?:my\s+)?(?:token\s+)?balance(?:s)?/i,
+    /^balance(?:s)?$/i,
+    /^my\s+balance(?:s)?$/i,
+    /^token\s+balance(?:s)?$/i
+  ];
+  
+  // HBAR specific balance patterns
+  const hbarBalancePatterns = [
+    /(?:what(?:'?s| is))?(?:\s+my|\s+the)?\s+hbar\s+balance/i,
+    /show\s+(?:me\s+)?(?:my\s+)?hbar\s+balance/i,
+    /check\s+(?:my\s+)?hbar\s+balance/i,
+    /display\s+(?:my\s+)?hbar\s+balance/i,
+    /get\s+(?:my\s+)?hbar\s+balance/i,
+    /^hbar\s+balance$/i,
+    /^my\s+hbar\s+balance$/i
+  ];
+  
+  // Specific token balance patterns
+  const specificTokenPattern = /(?:what(?:'?s| is))?(?:\s+my|\s+the)?\s+balance\s+(?:for|of)\s+token\s+([0-9.]+)/i;
+  const tokenIdMatch = cleanText.match(specificTokenPattern);
+  
+  // Check patterns
+  const isGeneralBalance = generalBalancePatterns.some(pattern => pattern.test(cleanText));
+  const isHbarBalance = hbarBalancePatterns.some(pattern => pattern.test(cleanText));
+  const isSpecificToken = tokenIdMatch !== null;
+  
+  // Determine the type of balance query
+  if (isHbarBalance) {
+    return { isBalanceQuery: true, type: 'HBAR' };
+  } else if (isSpecificToken && tokenIdMatch) {
+    return { isBalanceQuery: true, type: 'TOKEN', tokenId: tokenIdMatch[1] };
+  } else if (isGeneralBalance) {
+    return { isBalanceQuery: true, type: 'ALL' };
+  }
+  
+  return { isBalanceQuery: false, type: 'NONE' };
+}
+
+/**
+ * Generate appropriate balance response based on query type
+ * 
+ * @param twitterUsername - Twitter username 
+ * @param queryType - Type of balance query
+ * @param tokenId - Optional token ID for specific token balance
+ * @returns Formatted balance response
+ */
+export async function generateBalanceResponse(
+  twitterUsername: string, 
+  queryType: 'ALL' | 'HBAR' | 'TOKEN',
+  tokenId?: string
+): Promise<string> {
+  // Import the Eliza service
+
+  
+  try {
+    let balanceCommand = '';
+    
+    switch (queryType) {
+      case 'ALL':
+        balanceCommand = 'Show me all my token balances';
+        break;
+      case 'HBAR':
+        balanceCommand = "What's my HBAR balance?";
+        break;
+      case 'TOKEN':
+        balanceCommand = `What's my balance for token ${tokenId}?`;
+        break;
+    }
+  
+    const userInfo=await userService.getUserByTwitterUsername(twitterUsername);
+    const userId = userInfo?.twitter_id;
+    const userName = userInfo?.twitter_username;
+    // Get balance response from Eliza with all required parameters: command, userId, userName
+    const response = await sendCommandToEliza(balanceCommand, userId, userName);
+    
+    // Format the response for Twitter if needed
+    if (Array.isArray(response)) {
+      return formatElizaResponseForTwitter(response);
+    }
+    
+    // If response is already a string, return it directly
+    return typeof response === 'string' ? response : JSON.stringify(response);
+  } catch (error) {
+    console.error('Error generating balance response:', error);
+    return "I'm sorry, I couldn't retrieve your balance information at this time.";
+  }
+}
+
+/**
+ * Force reset the sinceId tracking
+ * This can be used to recover from stuck states
+ */
+export async function resetSinceIdTracking(): Promise<void> {
+  console.log('Resetting sinceId tracking to recover from possible stuck state');
+  lastProcessedTweetId = '';
+  skipSinceIdNextFetch = true;
+  consecutiveEmptyFetches = 0;
+  lastFullRefreshTime = Date.now();
+  
+  // Also refresh the replied-to cache from the API
+  repliedToIdsCacheTime = 0;
 } 

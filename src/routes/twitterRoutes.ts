@@ -187,9 +187,28 @@ router.post('/command', async (req, res) => {
   }
 });
 
-
 // Force reprocessing of tweets
 router.post('/force-reprocess', forceReprocessTweets);
+
+// Add endpoint to reset sinceId tracking
+router.post('/reset-tracking', async (req, res) => {
+  try {
+    const { resetSinceIdTracking } = require('../services/twitterService');
+    await resetSinceIdTracking();
+    
+    return res.status(200).json({ 
+      success: true, 
+      message: 'Successfully reset sinceId tracking' 
+    });
+  } catch (error) {
+    console.error('Error resetting sinceId tracking:', error);
+    return res.status(500).json({ 
+      success: false, 
+      error: 'Failed to reset sinceId tracking',
+      message: error.message
+    });
+  }
+});
 
 export default router; 
 
