@@ -15,6 +15,7 @@ import {
   getHederaAccountFromTwitter
 } from '../services/elizaService';
 import { createAccountForTwitterUser } from '../services/hederaAccountService';
+import { Tweet } from '../services/types';
 import {
   handleSendCommand,
   handleBalanceCommand,
@@ -81,8 +82,8 @@ export const processMentions = async (req: Request, res: Response): Promise<Resp
     
     // Sort mentions by creation date (oldest first) to process in chronological order
     const sortedMentions = [...recentMentions].sort((a, b) => {
-      const dateA = a.created_at || a.createdAt || new Date().toISOString();
-      const dateB = b.created_at || b.createdAt || new Date().toISOString();
+      const dateA = a.created_at || new Date().toISOString();
+      const dateB = b.created_at || new Date().toISOString();
       return new Date(dateA).getTime() - new Date(dateB).getTime();
     });
     
@@ -95,8 +96,8 @@ export const processMentions = async (req: Request, res: Response): Promise<Resp
       
       try {
         // Access properties safely with defaults
-        const id = mention.id_str || mention.id || mention.rest?.id_str || mention.rest?.id;
-        const createdAt = mention.created_at || mention.createdAt || new Date().toISOString();
+        const id = mention.id_str || mention.id || 'unknown';
+        const createdAt = mention.created_at || new Date().toISOString();
         
         // Get date from the pre-processed value (from filterRecentMentions) if available
         // This avoids duplicate date parsing logic
@@ -136,8 +137,7 @@ export const processMentions = async (req: Request, res: Response): Promise<Resp
         }
         
         // Extract text safely from various possible locations
-        const tweetText = mention.text || mention.full_text || mention.rest?.text || 
-                         mention.rest?.full_text || mention.data?.text || '';
+        const tweetText = mention.text || mention.full_text || '';
         
         // Log raw tweet text for debugging
         console.log(`Raw tweet text: "${tweetText}"`);
@@ -147,11 +147,10 @@ export const processMentions = async (req: Request, res: Response): Promise<Resp
           id_str: id,
           text: tweetText,
           user: {
-            id_str: mention.user?.id_str || mention.user?.id || mention.author_id || mention.userId || 'unknown',
-            screen_name: mention.user?.screen_name || mention.username || mention.author_username || 
-                        mention.user?.username || 'unknown'
+            id_str: mention.user?.id_str || mention.userId || 'unknown',
+            screen_name: mention.user?.screen_name || mention.username || 'unknown'
           },
-          in_reply_to_status_id_str: mention.in_reply_to_status_id_str || mention.referenced_tweets?.[0]?.id
+          in_reply_to_status_id_str: mention.inReplyToStatusId
         };
         
         // Validate the screen_name is available
@@ -647,7 +646,7 @@ export const forceReprocessTweets = async (req: Request, res: Response): Promise
       
       const results = await Promise.all(
         recentMentions.map(async (mention) => {
-          const id = mention.id_str || mention.id || mention.rest?.id_str || mention.rest?.id;
+          const id = mention.id_str || mention.id || 'unknown';
           if (!id) return { id: 'unknown', wasProcessed: false };
           
           const wasProcessed = await forceReprocessTweet(id);

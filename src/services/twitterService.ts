@@ -1,6 +1,9 @@
 import { getTwitterClient, getTwitterReplyBot } from './twitterClient';
 import { sendCommandToEliza, formatElizaResponseForTwitter } from './elizaService';
 import { userService } from './sqliteDbService';
+import { Tweet } from './types';
+import { SearchMode } from 'agent-twitter-client';
+import { isValidTweet, convertTimelineTweetToTweet } from '../utils/convertFromTimeline';
 /**
  * Interface for parsed Twitter mention command
  */
@@ -20,7 +23,7 @@ export interface ParsedCommand {
   memo?: string;
   tokenMetadata?: string;
   originalText: string;
-  // New fields for additional Hedera operations
+  // Fields for additional Hedera operations
   threshold?: string;
   receiver?: string;
   sender?: string;
@@ -30,15 +33,6 @@ export interface ParsedCommand {
   isSubmitKey?: boolean;
   lowerThreshold?: string; 
   upperThreshold?: string;
-}
-
-// Add this where you have your imports
-enum SearchMode {
-  Top = 0,
-  Latest = 1,
-  Photos = 2,
-  Videos = 3,
-  Users = 4
 }
 
 /**
@@ -619,9 +613,9 @@ export async function replyToTweet(tweetId: string, text: string): Promise<any> 
     if (!twitterClient) {
       throw new Error('Twitter reply bot not initialized');
     }
-      
-    // Using agent-twitter-client's sendQuoteTweet for replies
-    return await twitterClient.sendQuoteTweet(text, tweetId);
+
+    // Using our updated TwitterApi client to send a tweet
+    return await twitterClient.sendTweet(text, tweetId);
   } catch (error) {
     console.error('Error posting tweet reply:', error);
     throw error;
@@ -630,81 +624,97 @@ export async function replyToTweet(tweetId: string, text: string): Promise<any> 
 
 
 /**
- * Get recent mentions of the bot account (from the last 5 minutes)
+ * Get recent mentions of the bot account
  * @returns Array of mention tweets
  */
-export async function getRecentMentions(): Promise<any[]> {
+export async function getRecentMentions(): Promise<Tweet[]> {
   try {
     const twitterClient = getTwitterClient();
     if (!twitterClient) {
       throw new Error('Twitter client not initialized');
     }
     
-    // Using agent-twitter-client to get tweets and replies
     const botUsername = process.env.TWITTER_BOT_USERNAME || 'HederaPayBot';
-    
     console.log(`Fetching recent tweets mentioning @${botUsername}`);
     
-    // Using search method to find mentions
-    // Collect all tweets from the AsyncGenerator into an array
-    const searchResults = [];
-    const mentionsGenerator = twitterClient.searchTweets(`@${botUsername}`, 20,SearchMode.Latest);
-    
-    for await (const tweet of mentionsGenerator) {
-      // Get the created_at date with more robust extraction
-      console.log("tweet",tweet)
-      const tweetAny = tweet as any;
-      
-      // Try different paths to find the timestamp in the tweet object
-      let createdAtStr: string | null = null;
-      
-      // Check for string formatted date (ISO format)
-      if (typeof tweetAny.created_at === 'string') {
-        createdAtStr = tweetAny.created_at;
-      } else if (typeof tweetAny.createdAt === 'string') {
-        createdAtStr = tweetAny.createdAt;
-      } 
-      // Check for REST response format
-      else if (tweetAny.rest && tweetAny.rest.created_at) {
-        createdAtStr = tweetAny.rest.created_at;
-      }
-      // Check for timestamp in milliseconds/seconds
-      else if (typeof tweetAny.timestamp === 'number') {
-        // Convert timestamp to ISO string (handle both seconds and milliseconds formats)
-        const timestamp = tweetAny.timestamp > 10000000000 
-          ? tweetAny.timestamp // already in milliseconds
-          : tweetAny.timestamp * 1000; // convert from seconds to milliseconds
-        
-        createdAtStr = new Date(timestamp).toISOString();
-      }
-      
-      // If we still don't have a date, log the issue and use current time
-      if (!createdAtStr) {
-        console.warn(`Could not find created_at timestamp in tweet object. Using current time.`);
-        console.warn(`Tweet object keys: ${Object.keys(tweetAny).join(', ')}`);
-        if (tweetAny.rest) {
-          console.warn(`Tweet.rest keys: ${Object.keys(tweetAny.rest).join(', ')}`);
-        }
-        createdAtStr = new Date().toISOString();
-      }
-      
-      const tweetDate = new Date(createdAtStr);
-      
-      // Add tweet info to log with more detailed timestamp
-      const id = tweetAny.id_str || tweetAny.id || 
-                (tweetAny.rest ? tweetAny.rest.id_str : null) || 
-                'unknown';
-                
-      console.log(`Found tweet ${id} from ${tweetDate.toISOString()} (${new Date().getTime() - tweetDate.getTime()}ms ago)`);
-      
-      // Store the parsed date directly in the tweet object for easier filtering later
-      tweetAny._parsedCreatedAt = tweetDate;
-      
-      searchResults.push(tweet);
-      if (searchResults.length >= 30) break; // Limit to 30 tweets
+    // Get the last processed tweet ID to use as a starting point
+    const sinceId = await getLastProcessedId();
+    if (sinceId) {
+      console.log(`Using sinceId: ${sinceId} to only fetch newer tweets`);
     }
     
-    return searchResults;
+    // Preferred method: getMyUnrepliedToMentions
+    if (typeof twitterClient.getMyUnrepliedToMentions === 'function') {
+      // Use the getMyUnrepliedToMentions method which is specifically designed for this purpose
+      const maxResults = 30; // Get up to 30 most recent mentions
+      const maxThreadDepth = 5; // Include up to 5 tweets in each conversation thread
+      
+      // Get conversation IDs to ignore
+      const ignoreConversationIds: string[] = [];
+      
+      // getMyUnrepliedToMentions has built-in filtering for tweets we've already replied to
+      const mentions = await twitterClient.getMyUnrepliedToMentions(
+        maxResults, 
+        maxThreadDepth,
+        ignoreConversationIds,
+        sinceId
+      );
+      
+      console.log(`Found ${mentions.length} unreplied mentions for @${botUsername} using getMyUnrepliedToMentions`);
+      return mentions;
+    } 
+    // Fallback to searchTweets if getMyUnrepliedToMentions is not available
+    else if (typeof twitterClient.searchTweets === 'function') {
+      console.log("Using searchTweets as fallback for getting mentions");
+      
+      // Build query with optional since_id parameter
+      let query = `@${botUsername}`;
+      if (sinceId) {
+        query += ` since_id:${sinceId}`;
+      }
+      
+      const result = await twitterClient.searchTweets(query, 30);
+      
+      // Handle both possible return types from searchTweets
+      let tweets: Tweet[] = [];
+      
+      // If result is an Array (Promise<Tweet[]> resolved)
+      if (Array.isArray(result)) {
+        tweets = result;
+      } 
+      // If result is an AsyncGenerator
+      else {
+        // Collect tweets from the AsyncGenerator
+        for await (const tweet of result) {
+          tweets.push(tweet as Tweet);
+          if (tweets.length >= 30) break; // Limit to 30 tweets
+        }
+      }
+      
+      console.log(`Found ${tweets.length} tweets mentioning @${botUsername} using searchTweets`);
+      
+      // With searchTweets, we also need to filter for tweets we have already replied to
+      if (typeof twitterClient.getMyRepliedToIds === 'function') {
+        try {
+          const repliedToIds = await twitterClient.getMyRepliedToIds();
+          console.log(`Filtering out ${repliedToIds.length} tweets we have already replied to`);
+          tweets = tweets.filter(tweet => {
+            const tweetId = tweet.id || tweet.id_str;
+            return tweetId && !repliedToIds.includes(tweetId);
+          });
+          console.log(`After filtering, ${tweets.length} tweets remaining`);
+        } catch (error) {
+          console.error('Error filtering out replied tweets:', error);
+        }
+      }
+      
+      return tweets;
+    } 
+    // No suitable method available
+    else {
+      console.warn("No suitable method available to get mentions");
+      return [];
+    }
   } catch (error) {
     console.error('Error getting recent mentions:', error);
     return [];
@@ -820,6 +830,36 @@ export async function generateBalanceResponse(
 // Use a Map with tweet ID as key and processed time as value
 const processedTweets = new Map<string, number>();
 const MAX_PROCESSED_TWEETS = 10000;
+// Cache of replied to IDs from the Twitter API
+let repliedToIdsCache: string[] = [];
+let repliedToIdsCacheTime: number = 0;
+const REPLIED_CACHE_TTL = 5 * 60 * 1000; // 5 minutes in milliseconds
+
+// Keep track of the latest tweet ID we've seen
+let lastProcessedTweetId: string = '';
+
+/**
+ * Get the ID of the last processed tweet
+ * This can be used as a sinceId parameter for future API calls
+ * @returns The ID of the last processed tweet
+ */
+export async function getLastProcessedId(): Promise<string | undefined> {
+  return lastProcessedTweetId || undefined;
+}
+
+/**
+ * Update the last processed tweet ID
+ * @param tweetId - ID of the tweet to set as the most recent
+ */
+export async function updateLastProcessedId(tweetId: string): Promise<void> {
+  if (!tweetId) return;
+  
+  // Only update if this ID is newer (has a higher numeric value)
+  if (!lastProcessedTweetId || tweetId > lastProcessedTweetId) {
+    lastProcessedTweetId = tweetId;
+    console.log(`Updated last processed tweet ID to ${tweetId}`);
+  }
+}
 
 /**
  * Check if a tweet has been processed before
@@ -832,10 +872,35 @@ export async function hasBeenProcessed(tweetId: string): Promise<boolean> {
     return false;
   }
 
-  // Check if this specific tweet is in our cache
+  // First check: our in-memory cache
   if (processedTweets.has(tweetId)) {
-    console.log(`Tweet ${tweetId} was already processed - skipping`);
+    console.log(`Tweet ${tweetId} was already processed according to in-memory cache - skipping`);
     return true;
+  }
+  
+  // Second check: API replied-to IDs if available
+  const twitterClient = getTwitterClient();
+  if (twitterClient && typeof twitterClient.getMyRepliedToIds === 'function') {
+    try {
+      // Check if we need to refresh the cache
+      const now = Date.now();
+      if (!repliedToIdsCache.length || now - repliedToIdsCacheTime > REPLIED_CACHE_TTL) {
+        console.log('Refreshing replied-to tweets cache from Twitter API');
+        repliedToIdsCache = await twitterClient.getMyRepliedToIds();
+        repliedToIdsCacheTime = now;
+        console.log(`Cached ${repliedToIdsCache.length} replied-to tweet IDs from API`);
+      }
+      
+      // Check if this tweet is in our replied-to cache
+      if (repliedToIdsCache.includes(tweetId)) {
+        console.log(`Tweet ${tweetId} was already replied to according to Twitter API - skipping`);
+        // Update our in-memory cache too
+        processedTweets.set(tweetId, Date.now());
+        return true;
+      }
+    } catch (error) {
+      console.error('Error checking replied-to tweets from API, falling back to in-memory cache:', error);
+    }
   }
   
   console.log(`Tweet ${tweetId} has not been processed before - will process`);
@@ -855,6 +920,11 @@ export async function forceReprocessTweet(tweetId: string): Promise<boolean> {
     processedTweets.delete(tweetId);
     console.log(`Forced reprocessing of tweet ${tweetId}`);
   }
+  
+  // Also check if we need to refetch the replied-to IDs cache
+  // to ensure we have the latest data when forcing reprocessing
+  repliedToIdsCacheTime = 0; // Invalidate the cache
+  
   return wasProcessed;
 }
 
@@ -869,6 +939,15 @@ export async function markAsProcessed(tweetId: string, skipped: boolean = false)
   // Store the current timestamp with the tweet ID
   processedTweets.set(tweetId, Date.now());
   console.log(`Marked tweet ${tweetId} as processed${skipped ? ' (skipped)' : ''}`);
+  
+  // If the tweet was processed (not skipped), add it to our replied-to cache
+  // to keep it in sync with what's in our memory
+  if (!skipped) {
+    repliedToIdsCache = [...repliedToIdsCache, tweetId];
+  }
+  
+  // Update the last processed ID
+  await updateLastProcessedId(tweetId);
   
   // If we have too many tweets, remove the oldest ones
   if (processedTweets.size > MAX_PROCESSED_TWEETS) {
@@ -887,90 +966,64 @@ export async function markAsProcessed(tweetId: string, skipped: boolean = false)
   }
 }
 
-// Filter for recent mentions - no time filtering
-export async function filterRecentMentions(mentions: any[]): Promise<any[]> {
+// Filter and prepare recent mentions for processing
+export async function filterRecentMentions(mentions: Tweet[]): Promise<Tweet[]> {
   if (!mentions || mentions.length === 0) {
     return [];
   }
   
-  // Get current server time for logging
-  const serverTime = new Date();
-  console.log(`Server current time: ${serverTime.toISOString()}`);
-  console.log(`Processing all ${mentions.length} tweets regardless of age`);
+  console.log(`Processing ${mentions.length} tweets from TwitterApi`);
   
-  // Process each tweet to extract proper timestamps (for logging purposes)
-  mentions.forEach(mention => {
-    const tweetAny = mention as any;
-    
-    // First try to extract created_at from common locations
-    let createdAtStr = tweetAny.created_at || tweetAny.createdAt;
-    
-    // Then look in nested properties
-    if (!createdAtStr && tweetAny.rest && tweetAny.rest.created_at) {
-      createdAtStr = tweetAny.rest.created_at;
-    }
-    
-    // Try to find the timestamp in even more deeply nested objects
-    if (!createdAtStr && tweetAny.data && tweetAny.data.created_at) {
-      createdAtStr = tweetAny.data.created_at;
-    }
-    
-    // Check for timestamp in milliseconds/seconds format
-    if (!createdAtStr && (typeof tweetAny.timestamp === 'number' || typeof tweetAny.time === 'number')) {
-      // Convert timestamp to ISO string (handle both seconds and milliseconds formats)
-      const timestamp = (tweetAny.timestamp || tweetAny.time) > 10000000000 
-        ? (tweetAny.timestamp || tweetAny.time) // already in milliseconds
-        : (tweetAny.timestamp || tweetAny.time) * 1000; // convert from seconds to milliseconds
-      
-      createdAtStr = new Date(timestamp).toISOString();
-      console.log(`Used numeric timestamp: ${timestamp} -> ${createdAtStr}`);
-    }
-    
-    // If tweet id contains creation time info (Twitter IDs encode creation time)
-    if (!createdAtStr && (tweetAny.id_str || tweetAny.id)) {
+  // Set the _parsedCreatedAt property for each tweet to help the controller
+  mentions.forEach(tweet => {
+    // Use timeParsed if available (our Tweet interface's parsed date)
+    if (tweet.timeParsed instanceof Date) {
+      tweet._parsedCreatedAt = tweet.timeParsed;
+    } 
+    // Otherwise try created_at string
+    else if (tweet.created_at) {
       try {
-        // Twitter snowflake IDs: First 41 bits are timestamp (ms since 2010-11-04)
-        const tweetId = tweetAny.id_str || tweetAny.id;
-        if (tweetId && tweetId.length > 15) { // Only try for likely Twitter IDs
-          const snowflakeTimestampMs = Number(BigInt(tweetId) >> 22n) + 1288834974657; // Twitter epoch
-          if (!isNaN(snowflakeTimestampMs) && snowflakeTimestampMs > 1000000000000) {
-            createdAtStr = new Date(snowflakeTimestampMs).toISOString();
-            console.log(`Extracted date from tweet ID: ${createdAtStr}`);
-          }
-        }
+        tweet._parsedCreatedAt = new Date(tweet.created_at);
       } catch (e) {
-        console.warn('Failed to extract date from tweet ID, using fallback', e);
+        console.warn(`Error parsing created_at date for tweet ${tweet.id || tweet.id_str}`, e);
+        // Use current time as fallback
+        tweet._parsedCreatedAt = new Date();
       }
     }
-    
-    // Last resort: use current time with small offset to ensure it's processed
-    if (!createdAtStr) {
-      console.warn(`Could not find created_at timestamp in tweet. Using current time minus 5 minutes.`);
-      const fiveMinutesAgo = new Date(serverTime.getTime() - (5 * 60 * 1000));
-      createdAtStr = fiveMinutesAgo.toISOString();
+    // Last resort, use current time
+    else {
+      tweet._parsedCreatedAt = new Date();
     }
-    
-    // Create a proper date object
-    let mentionDate: Date;
-    try {
-      mentionDate = new Date(createdAtStr);
-      if (isNaN(mentionDate.getTime())) {
-        // If date is invalid, use current time minus 5 minutes as fallback
-        console.warn(`Invalid date format: "${createdAtStr}", using current time minus 5 minutes`);
-        mentionDate = new Date(serverTime.getTime() - (5 * 60 * 1000));
-      }
-    } catch (e) {
-      console.warn(`Error parsing date: "${createdAtStr}", using current time minus 5 minutes`, e);
-      mentionDate = new Date(serverTime.getTime() - (5 * 60 * 1000));
-    }
-    
-    // Store the parsed date for use in the controller
-    tweetAny._parsedCreatedAt = mentionDate;
-    
-    // Log the tweet info but don't filter by date
-    console.log(`Tweet ID: ${tweetAny.id_str || tweetAny.id}, Date: ${mentionDate.toISOString()}`);
   });
   
-  // Return all mentions without filtering by age
-  return mentions;
+  // Additional filtering for tweets we've already processed in our system
+  // This is different from tweets we've replied to via Twitter API
+  const filteredMentions = [];
+  
+  for (const tweet of mentions) {
+    const tweetId = tweet.id || tweet.id_str;
+    if (!tweetId) continue;
+    
+    // Check if this tweet is in our local processed cache
+    if (await hasBeenProcessed(tweetId)) {
+      console.log(`Filtering out tweet ${tweetId} - already processed`);
+      continue;
+    }
+    
+    // Check if this tweet contains our bot's username mention
+    const botUsername = process.env.TWITTER_BOT_USERNAME || 'HederaPayBot';
+    const tweetText = tweet.text || tweet.full_text || '';
+    
+    if (!tweetText.toLowerCase().includes(`@${botUsername.toLowerCase()}`)) {
+      console.log(`Filtering out tweet ${tweetId} - not mentioning our bot`);
+      await markAsProcessed(tweetId, true); // Mark as processed but skipped
+      continue;
+    }
+    
+    // Add to filtered results
+    filteredMentions.push(tweet);
+  }
+  
+  console.log(`After filtering, ${filteredMentions.length} tweets will be processed`);
+  return filteredMentions;
 } 
